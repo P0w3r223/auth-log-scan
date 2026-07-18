@@ -1,0 +1,46 @@
+# CLAUDE.md — auth-log-scan
+
+Guidance for Claude Code (and any contributor) working in this repository.
+
+## What this project is
+A command-line scanner that reads OpenSSH authentication logs (`/var/log/auth.log`,
+`/var/log/secure`) and flags brute-force sources, username enumeration, and suspicious
+logins, printing a terminal report (and optional JSON). Portfolio proof B2 — evidence of
+Linux/security fundamentals and log analysis; covers the CISCO Ethical Hacker certificate.
+
+## Architecture
+```
+src/auth_log_scan/
+  config.py    # detection thresholds + report sizing (no I/O)
+  parse.py     # sshd log line -> AuthEvent (pure regex parsing, no I/O)
+  analyze.py   # AuthEvent list -> ScanResult (brute-force / enumeration / suspicious success)
+  report.py    # ScanResult -> terminal tables and JSON dict (rendering only)
+  cli.py       # the only I/O: read file/stdin, run the scan, print/export
+sample/auth.log  # synthetic log (RFC 5737 documentation IPs) for the demo + docs
+tests/           # pytest
+```
+
+## Rules (do not violate)
+- **Separate I/O from logic.** `parse`/`analyze`/`report` are pure and unit-tested; disk and
+  stdin/stdout live only in `cli.py`.
+- **No hardcoded thresholds.** Detection tunables live in `config.py`; the CLI overrides them.
+- **Synthetic data only.** Any committed sample log uses RFC 5737 documentation IP ranges
+  (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) and invented usernames — never real logs.
+- **Parse defensively.** Unrecognized lines (CRON, disconnects, other daemons) are skipped,
+  never crash the scan.
+- **Traditional syslog timestamps omit the year** — the year is supplied by the caller
+  (`--year`, default: current year); keep parsing deterministic given its inputs.
+
+## Conventions
+- English for code, comments, README, commit messages. Conventional Commits.
+- No hardcoded values — configurable things live in `config.py`.
+- Separate I/O from logic; pure functions are unit-tested.
+- Interpreter: `.venv/Scripts/python.exe` (Python 3.12). Standard library only at runtime.
+
+## How to run
+```bash
+.venv/Scripts/python -m pip install -r requirements.txt
+pytest
+auth-log-scan sample/auth.log            # or: python -m auth_log_scan sample/auth.log
+cat /var/log/auth.log | auth-log-scan -   # read from stdin
+```

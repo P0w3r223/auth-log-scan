@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auth-log-scan"
+version = "0.1.0"
+description = "Scan OpenSSH auth logs for brute-force, user enumeration, and suspicious logins"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Runtime uses the standard library only (re, argparse, datetime, json, collections).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+]
+
+[project.scripts]
+auth-log-scan = "auth_log_scan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
