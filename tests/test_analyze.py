@@ -110,3 +110,10 @@ def test_top_source_ips_ordered_by_failures():
     result = analyze(events, threshold=100)  # avoid brute-force flags; only check ordering
     assert result.top_source_ips[0] == ("2.2.2.2", 5)
     assert result.top_source_ips[1] == ("1.1.1.1", 3)
+
+
+def test_brute_force_sorted_by_peak_descending():
+    weak = [failed("1.1.1.1", off) for off in range(0, 12, 2)]  # 6 failures in window
+    strong = [failed("2.2.2.2", off) for off in range(0, 20, 2)]  # 10 failures in window
+    result = analyze(weak + strong, threshold=5, window=timedelta(seconds=60))
+    assert [h.source_ip for h in result.brute_force] == ["2.2.2.2", "1.1.1.1"]

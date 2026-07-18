@@ -80,3 +80,23 @@ def test_parse_lines_yields_only_recognised_events():
     events = list(parse_lines(lines, YEAR))
     assert len(events) == 1
     assert events[0].user == "root"
+
+
+def test_parse_modern_sshd_session_program():
+    # OpenSSH >= 9.8 logs via `sshd-session[pid]`; it must parse just like `sshd[pid]`.
+    line = "Mar 10 06:55:05 web01 sshd-session[2102]: Failed password for root from 203.0.113.7 port 40003 ssh2"
+    event = parse_line(line, YEAR)
+    assert event is not None
+    assert event.event == EventType.FAILED
+    assert event.user == "root"
+    assert event.source_ip == "203.0.113.7"
+
+
+def test_parse_lines_bumps_year_across_december_to_january():
+    lines = [
+        "Dec 31 23:59:00 h sshd[1]: Failed password for root from 1.2.3.4 port 1 ssh2",
+        "Jan 01 00:01:00 h sshd[2]: Failed password for root from 1.2.3.4 port 2 ssh2",
+    ]
+    events = list(parse_lines(lines, 2025))
+    assert events[0].timestamp == datetime(2025, 12, 31, 23, 59, 0)
+    assert events[1].timestamp == datetime(2026, 1, 1, 0, 1, 0)  # year rolled over

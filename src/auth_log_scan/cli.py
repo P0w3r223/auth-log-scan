@@ -38,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--top", type=int, default=config.TOP_N, help=f"rows in the top tables (default {config.TOP_N})"
     )
     parser.add_argument(
+        "--min-success-failures", type=int, default=config.SUSPICIOUS_SUCCESS_MIN_FAILURES,
+        help="prior failures from an IP before an accepted login is flagged suspicious "
+        f"(default {config.SUSPICIOUS_SUCCESS_MIN_FAILURES})",
+    )
+    parser.add_argument(
         "--year", type=int, default=None,
         help="year for syslog timestamps that omit it (default: current year)",
     )
@@ -48,26 +53,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_lines(path: str) -> List[str]:
-    if path == "-":
-        return sys.stdin.read().splitlines()
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
-        return handle.read().splitlines()
+def _line_counter(iterable, counter: List[int]):
+    """Pass lines through while counting them, so input can be streamed (not fully buffered)."""
+    for line in iterable:
+        counter[0] += 1
+        yield line
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.threshold < 1 or args.window <= 0 or args.top < 0 or args.min_success_failures < 1:
+        print(
+            "error: --threshold and --min-success-failures must be >= 1, "
+            "--window > 0, and --top >= 0",
+            file=sys.stderr,
+        )
+        return 2
+
     year = args.year if args.year is not None else datetime.now().year
 
+    seen = [0]  # lines read, counted as they stream through the parser
     try:
-        lines = _read_lines(args.logfile)
+        if args.logfile == "-":
+            events = list(parse_lines(_line_counter(sys.stdin, seen), year))
+        else:
+            with open(args.logfile, "r", encoding="utf-8", errors="replace") as handle:
+                events = list(parse_lines(_line_counter(handle, seen), year))
     except OSError as exc:
         print(f"error: cannot read {args.logfile}: {exc}", file=sys.stderr)
         return 1
 
-    events = list(parse_lines(lines, year))
+    if seen[0] and not events:
+        print(
+            f"warn: read {seen[0]} line(s) but recognized 0 sshd auth events "
+            "— unsupported log format?",
+            file=sys.stderr,
+        )
+
     result = analyze(
-        events, threshold=args.threshold, window=timedelta(seconds=args.window), top_n=args.top
+        events,
+        threshold=args.threshold,
+        window=timedelta(seconds=args.window),
+        min_success_failures=args.min_success_failures,
+        top_n=args.top,
     )
 
     print(render_terminal(result))

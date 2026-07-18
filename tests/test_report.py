@@ -41,3 +41,15 @@ def test_render_terminal_handles_empty_result():
     text = render_terminal(analyze([]))
     assert "brute-force sources (0)" in text
     assert "none" in text
+
+
+def test_render_terminal_neutralizes_control_bytes():
+    # An attacker-chosen username with an ANSI escape must not reach the terminal raw.
+    base = datetime(2026, 3, 10, 7, 0, 0)
+    events = [
+        AuthEvent(base + timedelta(seconds=i), EventType.FAILED, "\x1b[31mroot", "203.0.113.7", port=1000 + i)
+        for i in range(5)
+    ]
+    text = render_terminal(analyze(events, threshold=5, window=timedelta(seconds=60)))
+    assert "\x1b" not in text  # ESC byte escaped
+    assert "root" in text  # still legible

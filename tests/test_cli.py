@@ -56,3 +56,19 @@ def test_missing_file_returns_error(capsys):
     rc = main(["/no/such/file.log", "--year", "2026"])
     assert rc == 1
     assert "cannot read" in capsys.readouterr().err
+
+
+def test_negative_window_is_rejected(tmp_path, capsys):
+    log = tmp_path / "auth.log"
+    log.write_text(SAMPLE + "\n", encoding="utf-8")
+    rc = main([str(log), "--year", "2026", "--window", "-1"])
+    assert rc == 2
+    assert "window" in capsys.readouterr().err
+
+
+def test_warns_when_no_events_recognized(tmp_path, capsys):
+    log = tmp_path / "auth.log"
+    log.write_text("some random line\nanother unrelated line\n", encoding="utf-8")
+    rc = main([str(log), "--year", "2026"])
+    assert rc == 0
+    assert "recognized 0 sshd auth events" in capsys.readouterr().err

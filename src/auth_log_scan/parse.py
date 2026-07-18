@@ -35,9 +35,11 @@ class AuthEvent:
 
 
 # syslog prefix: "Mon DD HH:MM:SS host sshd[pid]: <message>" — capture the time and message.
+# OpenSSH >= 9.8 (default on 2024+ distros) logs per-connection auth via `sshd-session[pid]`,
+# so accept both program names or modern logs would be silently skipped.
 _SYSLOG_RE = re.compile(
     r"^(?P<mon>[A-Z][a-z]{2})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})\s+"
-    r"\S+\s+sshd\[\d+\]:\s+(?P<msg>.*)$"
+    r"\S+\s+sshd(?:-session)?\[\d+\]:\s+(?P<msg>.*)$"
 )
 
 _FAILED_RE = re.compile(
@@ -48,7 +50,7 @@ _ACCEPTED_RE = re.compile(
     r"^Accepted \S+ for (?P<user>\S+) from (?P<ip>\S+) port (?P<port>\d+)"
 )
 _INVALID_RE = re.compile(
-    r"^Invalid user (?P<user>\S*) from (?P<ip>\S+)(?: port (?P<port>\d+))?"
+    r"^Invalid user (?P<user>\S+) from (?P<ip>\S+)(?: port (?P<port>\d+))?"
 )
 
 _MONTHS = {
@@ -117,8 +119,22 @@ def parse_line(line: str, year: int) -> Optional[AuthEvent]:
 
 
 def parse_lines(lines: Iterable[str], year: int) -> Iterator[AuthEvent]:
-    """Parse an iterable of log lines, yielding only the recognised auth events."""
+    """Parse log lines in order, yielding recognised auth events.
+
+    Traditional syslog omits the year. If the month number decreases from one event to the
+    next (a Dec -> Jan boundary), the working year is bumped so a log that crosses New Year
+    keeps a monotonic timeline instead of sorting January before December.
+    """
+    working_year = year
+    prev_month: Optional[int] = None
     for line in lines:
-        event = parse_line(line, year)
-        if event is not None:
-            yield event
+        event = parse_line(line, working_year)
+        if event is None:
+            continue
+        if prev_month is not None and event.timestamp.month < prev_month:
+            working_year += 1
+            reparsed = parse_line(line, working_year)
+            if reparsed is not None:
+                event = reparsed
+        prev_month = event.timestamp.month
+        yield event

@@ -12,6 +12,15 @@ def _fmt_ts(ts: Optional[datetime]) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "-"
 
 
+def _safe(text: str) -> str:
+    """Neutralize control/ANSI bytes before printing untrusted log fields to a terminal.
+
+    Usernames and source addresses are attacker-chosen; escaping them prevents terminal
+    (color/cursor/title) injection and report spoofing. The JSON path is already safe.
+    """
+    return text.encode("unicode_escape").decode("ascii")
+
+
 def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
     """Fixed-width text table (stdlib only). Integer columns are right-aligned."""
     ncols = len(headers)
@@ -47,7 +56,7 @@ def render_terminal(result: ScanResult) -> str:
     out.append(f"[!] brute-force sources ({len(result.brute_force)})")
     if result.brute_force:
         rows = [
-            [h.source_ip, h.max_in_window, h.window_seconds, h.failures, h.targeted_users,
+            [_safe(h.source_ip), h.max_in_window, h.window_seconds, h.failures, h.targeted_users,
              _fmt_ts(h.first_seen), _fmt_ts(h.last_seen)]
             for h in result.brute_force
         ]
@@ -61,7 +70,7 @@ def render_terminal(result: ScanResult) -> str:
     out.append(f"[!] suspicious successes ({len(result.suspicious_successes)})")
     if result.suspicious_successes:
         rows = [
-            [s.source_ip, s.user, _fmt_ts(s.timestamp), s.prior_failures]
+            [_safe(s.source_ip), _safe(s.user), _fmt_ts(s.timestamp), s.prior_failures]
             for s in result.suspicious_successes
         ]
         out.append(_table(["source_ip", "user", "when", "prior_fails"], rows))
@@ -71,19 +80,19 @@ def render_terminal(result: ScanResult) -> str:
 
     out.append("top attacked usernames")
     if result.top_targeted_users:
-        out.append(_table(["user", "attempts"], [[u, c] for u, c in result.top_targeted_users]))
+        out.append(_table(["user", "attempts"], [[_safe(u), c] for u, c in result.top_targeted_users]))
     else:
         out.append("  none")
     out.append("")
 
     out.append("top source IPs by failures")
     if result.top_source_ips:
-        out.append(_table(["source_ip", "failures"], [[ip, c] for ip, c in result.top_source_ips]))
+        out.append(_table(["source_ip", "failures"], [[_safe(ip), c] for ip, c in result.top_source_ips]))
     else:
         out.append("  none")
     out.append("")
 
-    probed = ", ".join(result.invalid_usernames) if result.invalid_usernames else "none"
+    probed = ", ".join(_safe(u) for u in result.invalid_usernames) if result.invalid_usernames else "none"
     out.append(f"invalid usernames probed ({len(result.invalid_usernames)}): {probed}")
     return "\n".join(out)
 
