@@ -116,6 +116,7 @@ def to_json_dict(result: ScanResult) -> Dict[str, Any]:
                 "first_seen": h.first_seen.isoformat(),
                 "last_seen": h.last_seen.isoformat(),
                 "targeted_users": h.targeted_users,
+                "peak_start": h.peak_start.isoformat(),
             }
             for h in result.brute_force
         ],

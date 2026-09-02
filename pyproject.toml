@@ -23,6 +23,11 @@ auth-log-scan = "auth_log_scan.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The page generator reads its template and assets from beside itself, so they have to
+# travel with the package rather than only existing in the source tree.
+[tool.setuptools.package-data]
+"auth_log_scan.site" = ["templates/*.html", "assets/*.css", "assets/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

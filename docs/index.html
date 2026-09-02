@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>auth-log-scan — what a brute-force attack looks like in an SSH log</title>
+<meta name="description" content="A live demo of auth-log-scan: an OpenSSH auth log read by the real scanner, with the sliding-window rule that separates an attack from ordinary noise made visible.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="auth-log-scan — what a brute-force attack looks like in an SSH log">
+<meta property="og:description" content="The sliding-window rule behind SSH brute-force detection, shown on a synthetic auth log.">
+<meta property="og:url" content="https://p0w3r223.github.io/auth-log-scan/">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2213%22 font-size=%2213%22>&#128737;</text></svg>">
+<style>
+/* Both colour schemes are first-class: the palette is a set of variables, and dark mode
+   swaps the variables rather than restating the design. Charts inherit these too, which
+   is the main reason they are inline SVG and not images. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f6f8fa;
+  --border: #e3e7ee;
+  --text: #1c2430;
+  --muted: #5b6472;
+  --accent: #2563eb;
+  --accent-soft: #93c5fd;
+  --positive: #059669;
+  --warn: #b45309;
+  --danger: #dc2626;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1319;
+    --surface: #161c25;
+    --border: #263041;
+    --text: #e6eaf2;
+    --muted: #98a3b6;
+    --accent: #6ea8fe;
+    --accent-soft: #2c4a7c;
+    --positive: #34d399;
+    --warn: #fbbf24;
+    --danger: #f87171;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+a { color: var(--accent); }
+a:focus-visible, summary:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+h1 {
+  font-size: clamp(1.75rem, 1.2rem + 2.2vw, 2.75rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
+}
+
+h2 {
+  font-size: 1.3rem;
+  letter-spacing: -0.01em;
+  margin: 2.75rem 0 0.35rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+h2:first-of-type { border-top: none; padding-top: 0; }
+h3 { font-size: 1rem; margin: 1.5rem 0 0.25rem; }
+p { margin: 0.5rem 0; }
+.lead { font-size: 1.1rem; color: var(--muted); max-width: 46rem; }
+.note { color: var(--muted); font-size: 0.9rem; }
+.hint { display: block; color: var(--muted); font-size: 0.85rem; font-weight: 400; }
+
+/* KPI row: the five numbers that frame everything below. */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  margin: 1.75rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+}
+
+.kpi-value { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; }
+.kpi-value.alert { color: var(--danger); }
+.kpi-label { font-size: 0.85rem; font-weight: 600; }
+.kpi-note { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+  margin: 1.25rem 0;
+}
+
+.card.caution { border-left: 3px solid var(--warn); }
+
+figure { margin: 1rem 0 0; }
+figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 0.35rem; }
+
+/* Charts scroll inside their own box; the page itself never scrolls sideways. */
+.chart-wrap { overflow-x: auto; }
+.chart { max-width: 100%; height: auto; display: block; }
+.chart text { font-size: 11px; fill: var(--text); }
+.chart .row-label { fill: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.chart .bar-value, .chart .axis { fill: var(--muted); font-size: 10.5px; }
+.chart .bar { fill: var(--accent); }
+.chart .bar.muted { fill: var(--accent-soft); }
+.chart .axis-line { stroke: var(--border); stroke-width: 1; }
+.chart .lane { fill: var(--surface); }
+.chart .lane-line { stroke: var(--border); stroke-width: 1; }
+
+/* Event marks. Shape carries the meaning and colour repeats it, so the chart survives
+   greyscale and colour blindness: a failure is a filled dot, an accepted login a ring,
+   a probe of a non-existent account a diamond. Not scoped to `.chart`: the legend draws
+   the same marks outside any chart, and a legend whose colours differ explains nothing. */
+.ev-failed { fill: var(--accent); opacity: 0.85; }
+.ev-invalid { fill: var(--warn); opacity: 0.9; }
+.ev-accepted { fill: none; stroke: var(--positive); stroke-width: 2; }
+.ev-accepted.breach { stroke: var(--danger); }
+
+/* The sliding window itself: a band over the densest span the detector found. */
+.chart .window-band { fill: var(--accent-soft); opacity: 0.45; }
+.chart .row.flagged .window-band { fill: var(--danger); opacity: 0.28; }
+.chart .verdict { font-size: 10.5px; fill: var(--muted); }
+.chart .row.flagged .verdict { fill: var(--danger); font-weight: 600; }
+.chart .row.flagged .row-label { font-weight: 700; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.legend svg { vertical-align: -2px; margin-right: 0.3rem; }
+
+/* Controls. Every value they can take was computed by the scanner at build time, so the
+   sliders switch between real results rather than approximating them in the browser. */
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.9rem 1.6rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+  margin: 1.25rem 0 0;
+}
+
+.control label { display: block; font-size: 0.85rem; font-weight: 600; }
+.control output { font-variant-numeric: tabular-nums; color: var(--accent); }
+.control input[type="range"] { width: 100%; accent-color: var(--accent); margin-top: 0.35rem; }
+.control .scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.verdict-line {
+  margin: 0.9rem 0 0;
+  font-size: 0.95rem;
+}
+.verdict-line strong { color: var(--danger); }
+
+/* Without JavaScript the page still holds a complete report — it is simply the one the
+   default thresholds produce, so the controls are hidden rather than shown inert. */
+.controls, .js-only { display: none; }
+.js .controls { display: grid; }
+.js .js-only { display: revert; }
+.js .no-js { display: none; }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); }
+th { font-weight: 600; color: var(--muted); font-size: 0.82rem; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.ip, td.user { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88rem; }
+tbody tr.flagged td.ip { color: var(--danger); font-weight: 600; }
+.empty { color: var(--muted); font-size: 0.9rem; }
+
+details { margin: 0.75rem 0; }
+summary { cursor: pointer; font-size: 0.9rem; color: var(--accent); }
+pre {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+code { font-size: 0.9em; }
+
+footer {
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media print {
+  body { max-width: none; }
+  details, .controls { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <p class="eyebrow">auth-log-scan · synthetic OpenSSH log · 14 March 2026</p>
+  <h1>108 failed logins in 7.1 hours — and only some of them are an attack</h1>
+  <p class="lead">
+    This page is the output of the scanner itself. It reads
+    <code>auth-demo.log</code>, flags brute-force sources, username enumeration and logins that
+    succeed from an address that had been failing, and everything below is what came back.
+  </p>
+</header>
+
+<ul class="kpis">
+<li class="kpi"><div class="kpi-value">163</div><div class="kpi-label">Log lines read</div><div class="kpi-note">146 recognised as sshd auth events; the rest are CRON, sudo and disconnects, skipped rather than guessed at</div></li><li class="kpi"><div class="kpi-value">108</div><div class="kpi-label">Failed logins</div><div class="kpi-note">77% of them come from the flagged sources below</div></li><li class="kpi"><div class="kpi-value alert">4</div><div class="kpi-label">Brute-force sources</div><div class="kpi-note">at least 5 failures inside a 60s window</div></li><li class="kpi"><div class="kpi-value">24</div><div class="kpi-label">Accounts probed</div><div class="kpi-note">usernames that do not exist on the host — the enumeration signature</div></li><li class="kpi"><div class="kpi-value alert">1</div><div class="kpi-label">Suspicious successes</div><div class="kpi-note">an accepted login from an address that had already failed repeatedly</div></li>
+</ul>
+
+<h2>What the log holds</h2>
+<p>
+  163 lines, of which 146 are sshd authentication events — the rest are CRON
+  jobs, sudo calls and disconnects that the parser skips rather than guesses at. Placed on
+  one clock, the day is mostly quiet, and the pressure arrives in bursts minutes long.
+</p>
+<figure>
+  <div class="chart-wrap"><svg class="chart" viewBox="0 0 720 324" width="720" height="324" role="img" aria-label="Authentication events by source address over the day" xmlns="http://www.w3.org/2000/svg"><title>Authentication events by source address over the day</title><line class="lane-line" x1="195.7" x2="195.7" y1="18" y2="298"></line><text class="axis" x="195.7" y="314" text-anchor="middle">01:00</text><line class="lane-line" x1="275.4" x2="275.4" y1="18" y2="298"></line><text class="axis" x="275.4" y="314" text-anchor="middle">02:00</text><line class="lane-line" x1="355.1" x2="355.1" y1="18" y2="298"></line><text class="axis" x="355.1" y="314" text-anchor="middle">03:00</text><line class="lane-line" x1="434.8" x2="434.8" y1="18" y2="298"></line><text class="axis" x="434.8" y="314" text-anchor="middle">04:00</text><line class="lane-line" x1="514.5" x2="514.5" y1="18" y2="298"></line><text class="axis" x="514.5" y="314" text-anchor="middle">05:00</text><line class="lane-line" x1="594.2" x2="594.2" y1="18" y2="298"></line><text class="axis" x="594.2" y="314" text-anchor="middle">06:00</text><line class="lane-line" x1="673.9" x2="673.9" y1="18" y2="298"></line><text class="axis" x="673.9" y="314" text-anchor="middle">07:00</text><text class="row-label" x="122" y="47.0" text-anchor="end">203.0.113.42</text><circle class="ev-failed" cx="437.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="437.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.2" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.2" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.3" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.3" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="438.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="439.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="439.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="439.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="439.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="439.2" cy="43.0" r="3"></circle><text class="row-label" x="122" y="81.0" text-anchor="end">198.51.100.77</text><rect class="ev-invalid" x="290.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 294.0 77.0)"></rect><rect class="ev-invalid" x="290.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 294.0 77.0)"></rect><rect class="ev-invalid" x="292.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 296.0 77.0)"></rect><rect class="ev-invalid" x="292.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 296.0 77.0)"></rect><rect class="ev-invalid" x="294.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 298.1 77.0)"></rect><rect class="ev-invalid" x="294.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 298.1 77.0)"></rect><rect class="ev-invalid" x="296.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 300.1 77.0)"></rect><rect class="ev-invalid" x="296.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 300.1 77.0)"></rect><rect class="ev-invalid" x="298.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 302.1 77.0)"></rect><rect class="ev-invalid" x="298.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 302.1 77.0)"></rect><rect class="ev-invalid" x="301.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 304.2 77.0)"></rect><rect class="ev-invalid" x="301.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 304.2 77.0)"></rect><rect class="ev-invalid" x="303.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 306.2 77.0)"></rect><rect class="ev-invalid" x="303.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 306.2 77.0)"></rect><rect class="ev-invalid" x="305.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 308.2 77.0)"></rect><rect class="ev-invalid" x="305.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 308.2 77.0)"></rect><rect class="ev-invalid" x="307.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 310.3 77.0)"></rect><rect class="ev-invalid" x="307.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 310.3 77.0)"></rect><rect class="ev-invalid" x="309.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 312.3 77.0)"></rect><rect class="ev-invalid" x="309.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 312.3 77.0)"></rect><rect class="ev-invalid" x="311.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 314.3 77.0)"></rect><rect class="ev-invalid" x="311.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 314.3 77.0)"></rect><rect class="ev-invalid" x="313.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 316.4 77.0)"></rect><rect class="ev-invalid" x="313.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 316.4 77.0)"></rect><rect class="ev-invalid" x="315.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 318.4 77.0)"></rect><rect class="ev-invalid" x="315.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 318.4 77.0)"></rect><rect class="ev-invalid" x="317.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 320.5 77.0)"></rect><rect class="ev-invalid" x="317.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 320.5 77.0)"></rect><rect class="ev-invalid" x="319.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 322.5 77.0)"></rect><rect class="ev-invalid" x="319.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 322.5 77.0)"></rect><rect class="ev-invalid" x="321.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 324.5 77.0)"></rect><rect class="ev-invalid" x="321.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 324.5 77.0)"></rect><rect class="ev-invalid" x="323.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 326.6 77.0)"></rect><rect class="ev-invalid" x="323.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 326.6 77.0)"></rect><rect class="ev-invalid" x="325.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 328.6 77.0)"></rect><rect class="ev-invalid" x="325.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 328.6 77.0)"></rect><rect class="ev-invalid" x="327.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 330.6 77.0)"></rect><rect class="ev-invalid" x="327.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 330.6 77.0)"></rect><rect class="ev-invalid" x="329.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 332.7 77.0)"></rect><rect class="ev-invalid" x="329.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 332.7 77.0)"></rect><rect class="ev-invalid" x="331.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 334.7 77.0)"></rect><rect class="ev-invalid" x="331.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 334.7 77.0)"></rect><rect class="ev-invalid" x="333.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 336.8 77.0)"></rect><rect class="ev-invalid" x="333.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 336.8 77.0)"></rect><rect class="ev-invalid" x="335.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 338.8 77.0)"></rect><rect class="ev-invalid" x="335.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 338.8 77.0)"></rect><rect class="ev-invalid" x="337.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 340.8 77.0)"></rect><rect class="ev-invalid" x="337.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 340.8 77.0)"></rect><text class="row-label" x="122" y="115.0" text-anchor="end">203.0.113.7</text><circle class="ev-failed" cx="555.6" cy="111.0" r="3"></circle><circle class="ev-failed" cx="555.7" cy="111.0" r="3"></circle><circle class="ev-failed" cx="555.8" cy="111.0" r="3"></circle><rect class="ev-invalid" x="552.6" y="107.8" width="6.4" height="6.4" transform="rotate(45 555.8 111.0)"></rect><rect class="ev-invalid" x="552.6" y="107.8" width="6.4" height="6.4" transform="rotate(45 555.8 111.0)"></rect><circle class="ev-failed" cx="555.9" cy="111.0" r="3"></circle><rect class="ev-invalid" x="552.8" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.0 111.0)"></rect><rect class="ev-invalid" x="552.8" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.0 111.0)"></rect><circle class="ev-failed" cx="556.0" cy="111.0" r="3"></circle><circle class="ev-failed" cx="556.1" cy="111.0" r="3"></circle><circle class="ev-failed" cx="556.2" cy="111.0" r="3"></circle><rect class="ev-invalid" x="553.0" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.2 111.0)"></rect><rect class="ev-invalid" x="553.0" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.2 111.0)"></rect><circle class="ev-failed" cx="556.3" cy="111.0" r="3"></circle><rect class="ev-invalid" x="553.2" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.4 111.0)"></rect><rect class="ev-invalid" x="553.2" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.4 111.0)"></rect><circle class="ev-failed" cx="556.4" cy="111.0" r="3"></circle><circle class="ev-failed" cx="556.5" cy="111.0" r="3"></circle><circle class="ev-failed" cx="556.6" cy="111.0" r="3"></circle><rect class="ev-invalid" x="553.4" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.6 111.0)"></rect><rect class="ev-invalid" x="553.4" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.6 111.0)"></rect><circle class="ev-failed" cx="556.7" cy="111.0" r="3"></circle><rect class="ev-invalid" x="553.6" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.8 111.0)"></rect><rect class="ev-invalid" x="553.6" y="107.8" width="6.4" height="6.4" transform="rotate(45 556.8 111.0)"></rect><circle class="ev-failed" cx="556.8" cy="111.0" r="3"></circle><circle class="ev-failed" cx="556.9" cy="111.0" r="3"></circle><circle class="ev-failed" cx="557.0" cy="111.0" r="3"></circle><rect class="ev-invalid" x="553.8" y="107.8" width="6.4" height="6.4" transform="rotate(45 557.0 111.0)"></rect><rect class="ev-invalid" x="553.8" y="107.8" width="6.4" height="6.4" transform="rotate(45 557.0 111.0)"></rect><circle class="ev-failed" cx="557.1" cy="111.0" r="3"></circle><rect class="ev-invalid" x="554.0" y="107.8" width="6.4" height="6.4" transform="rotate(45 557.2 111.0)"></rect><rect class="ev-invalid" x="554.0" y="107.8" width="6.4" height="6.4" transform="rotate(45 557.2 111.0)"></rect><circle class="ev-accepted breach" cx="557.3" cy="111.0" r="4.5"></circle><text class="row-label" x="122" y="149.0" text-anchor="end">198.51.100.23</text><circle class="ev-failed" cx="647.3" cy="145.0" r="3"></circle><circle class="ev-failed" cx="647.5" cy="145.0" r="3"></circle><circle class="ev-failed" cx="647.8" cy="145.0" r="3"></circle><circle class="ev-failed" cx="648.0" cy="145.0" r="3"></circle><circle class="ev-failed" cx="648.3" cy="145.0" r="3"></circle><circle class="ev-failed" cx="648.5" cy="145.0" r="3"></circle><circle class="ev-failed" cx="648.8" cy="145.0" r="3"></circle><circle class="ev-failed" cx="649.0" cy="145.0" r="3"></circle><circle class="ev-failed" cx="649.2" cy="145.0" r="3"></circle><circle class="ev-failed" cx="649.5" cy="145.0" r="3"></circle><circle class="ev-failed" cx="649.7" cy="145.0" r="3"></circle><circle class="ev-failed" cx="650.0" cy="145.0" r="3"></circle><text class="row-label" x="122" y="183.0" text-anchor="end">2001:db8:2::19</text><rect class="ev-invalid" x="690.6" y="175.8" width="6.4" height="6.4" transform="rotate(45 693.8 179.0)"></rect><rect class="ev-invalid" x="690.6" y="175.8" width="6.4" height="6.4" transform="rotate(45 693.8 179.0)"></rect><rect class="ev-invalid" x="690.7" y="175.8" width="6.4" height="6.4" transform="rotate(45 693.9 179.0)"></rect><rect class="ev-invalid" x="690.8" y="175.8" width="6.4" height="6.4" transform="rotate(45 694.0 179.0)"></rect><rect class="ev-invalid" x="690.9" y="175.8" width="6.4" height="6.4" transform="rotate(45 694.1 179.0)"></rect><rect class="ev-invalid" x="690.9" y="175.8" width="6.4" height="6.4" transform="rotate(45 694.1 179.0)"></rect><rect class="ev-invalid" x="691.0" y="175.8" width="6.4" height="6.4" transform="rotate(45 694.2 179.0)"></rect><rect class="ev-invalid" x="691.1" y="175.8" width="6.4" height="6.4" transform="rotate(45 694.3 179.0)"></rect><text class="row-label" x="122" y="217.0" text-anchor="end">192.0.2.11</text><circle class="ev-failed" cx="254.4" cy="213.0" r="3"></circle><circle class="ev-accepted" cx="254.6" cy="213.0" r="4.5"></circle><text class="row-label" x="122" y="251.0" text-anchor="end">192.0.2.10</text><circle class="ev-accepted" cx="132.0" cy="247.0" r="4.5"></circle><circle class="ev-accepted" cx="696.0" cy="247.0" r="4.5"></circle><text class="row-label" x="122" y="285.0" text-anchor="end">192.0.2.31</text><circle class="ev-accepted" cx="203.2" cy="281.0" r="4.5"></circle></svg></div>
+  <ul class="legend">
+    <li><svg width="12" height="12" aria-hidden="true"><circle class="ev-failed" cx="6" cy="6" r="3"></circle></svg>failed password</li>
+    <li><svg width="12" height="12" aria-hidden="true"><rect class="ev-invalid" x="3" y="3" width="6" height="6" transform="rotate(45 6 6)"></rect></svg>account that does not exist</li>
+    <li><svg width="14" height="14" aria-hidden="true"><circle class="ev-accepted" cx="7" cy="7" r="4.5"></circle></svg>accepted login</li>
+    <li><svg width="14" height="14" aria-hidden="true"><circle class="ev-accepted breach" cx="7" cy="7" r="4.5"></circle></svg>accepted after repeated failures</li>
+  </ul>
+  <figcaption>
+    Every recognised event between 00:12:03 and 07:16:40, one lane per source address.
+    108 failed, 5 accepted, 33 explicit <code>Invalid user</code>
+    lines.
+  </figcaption>
+</figure>
+
+<h2>The rule: a sliding window, not a total</h2>
+<p>
+  Counting failures per address would flag the wrong things. A shared host collects a
+  handful of typos a day, while an attacker produces the same number in a second. The
+  detector therefore reports the <em>densest</em> stretch: the largest number of failures
+  from one address inside any window-length span, and flags it when that peak reaches the
+  threshold.
+</p>
+<p>
+  Each lane below is zoomed to its own source, so a window that is a third of a pixel wide
+  across the whole day becomes visible. The band <em>is</em> the window; the marks inside
+  it are the count being compared.
+</p>
+
+<div class="controls">
+  <div class="control">
+    <label for="threshold">Threshold — failures needed to flag: <output id="threshold-value">5</output></label>
+    <input type="range" id="threshold" min="0" max="12" step="1" value="2" aria-label="failures needed to flag a source">
+    <div class="scale"><span>3</span><span>15</span></div>
+  </div>
+  <div class="control">
+    <label for="window">Window — how long the failures may take: <output id="window-value">60s</output></label>
+    <input type="range" id="window" min="0" max="6" step="1" value="2" aria-label="length of the sliding window">
+    <div class="scale"><span>15s</span><span>1h</span></div>
+  </div>
+</div>
+<p class="verdict-line js-only" id="verdict-line"></p>
+<p class="note no-js">
+  Shown at the defaults the CLI uses: threshold 5,
+  window 60 seconds. With JavaScript on, the two settings become sliders over
+  results this build already computed.
+</p>
+
+<figure>
+  <div class="chart-wrap"><svg class="chart" viewBox="0 0 720 310" width="720" height="310" role="img" aria-label="Failures per source with the densest window banded" id="window-chart" xmlns="http://www.w3.org/2000/svg"><title>Failures per source with the densest window banded</title><g class="row flagged" data-row="203.0.113.42"><rect class="lane" x="132" y="30.0" width="466" height="22" rx="3"></rect><rect class="window-band" data-band="203.0.113.42" x="132.0" y="30.0" width="358.5" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="43.0" y2="43.0"></line><circle class="ev-failed" cx="132.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="143.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="155.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="167.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="179.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="191.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="203.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="215.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="227.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="239.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="251.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="263.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="275.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="287.3" cy="43.0" r="3"></circle><circle class="ev-failed" cx="299.3" cy="43.0" r="3"></circle><circle class="ev-failed" cx="311.2" cy="43.0" r="3"></circle><circle class="ev-failed" cx="323.2" cy="43.0" r="3"></circle><circle class="ev-failed" cx="335.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="347.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="359.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="371.0" cy="43.0" r="3"></circle><circle class="ev-failed" cx="382.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="394.9" cy="43.0" r="3"></circle><circle class="ev-failed" cx="406.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="418.8" cy="43.0" r="3"></circle><circle class="ev-failed" cx="430.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="442.7" cy="43.0" r="3"></circle><circle class="ev-failed" cx="454.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="466.6" cy="43.0" r="3"></circle><circle class="ev-failed" cx="478.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="490.5" cy="43.0" r="3"></circle><circle class="ev-failed" cx="502.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="514.4" cy="43.0" r="3"></circle><circle class="ev-failed" cx="526.3" cy="43.0" r="3"></circle><circle class="ev-failed" cx="538.3" cy="43.0" r="3"></circle><circle class="ev-failed" cx="550.2" cy="43.0" r="3"></circle><circle class="ev-failed" cx="562.2" cy="43.0" r="3"></circle><circle class="ev-failed" cx="574.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="586.1" cy="43.0" r="3"></circle><circle class="ev-failed" cx="598.0" cy="43.0" r="3"></circle><text class="row-label" x="122" y="47.0" text-anchor="end">203.0.113.42</text><text class="verdict" data-verdict="203.0.113.42" x="608.0" y="47.0">31 in 60s ≥ 5</text></g><g class="row" data-row="198.51.100.77"><rect class="lane" x="132" y="64.0" width="466" height="22" rx="3"></rect><rect class="window-band" data-band="198.51.100.77" x="132.0" y="64.0" width="13.2" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="77.0" y2="77.0"></line><rect class="ev-invalid" x="128.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 132.0 77.0)"></rect><rect class="ev-invalid" x="128.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 132.0 77.0)"></rect><rect class="ev-invalid" x="149.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 152.3 77.0)"></rect><rect class="ev-invalid" x="149.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 152.3 77.0)"></rect><rect class="ev-invalid" x="169.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 172.5 77.0)"></rect><rect class="ev-invalid" x="169.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 172.5 77.0)"></rect><rect class="ev-invalid" x="189.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 192.8 77.0)"></rect><rect class="ev-invalid" x="189.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 192.8 77.0)"></rect><rect class="ev-invalid" x="209.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 213.0 77.0)"></rect><rect class="ev-invalid" x="209.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 213.0 77.0)"></rect><rect class="ev-invalid" x="230.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 233.3 77.0)"></rect><rect class="ev-invalid" x="230.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 233.3 77.0)"></rect><rect class="ev-invalid" x="250.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 253.6 77.0)"></rect><rect class="ev-invalid" x="250.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 253.6 77.0)"></rect><rect class="ev-invalid" x="270.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 273.8 77.0)"></rect><rect class="ev-invalid" x="270.6" y="73.8" width="6.4" height="6.4" transform="rotate(45 273.8 77.0)"></rect><rect class="ev-invalid" x="290.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 294.1 77.0)"></rect><rect class="ev-invalid" x="290.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 294.1 77.0)"></rect><rect class="ev-invalid" x="311.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 314.3 77.0)"></rect><rect class="ev-invalid" x="311.1" y="73.8" width="6.4" height="6.4" transform="rotate(45 314.3 77.0)"></rect><rect class="ev-invalid" x="331.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 334.6 77.0)"></rect><rect class="ev-invalid" x="331.4" y="73.8" width="6.4" height="6.4" transform="rotate(45 334.6 77.0)"></rect><rect class="ev-invalid" x="351.7" y="73.8" width="6.4" height="6.4" transform="rotate(45 354.9 77.0)"></rect><rect class="ev-invalid" x="351.7" y="73.8" width="6.4" height="6.4" transform="rotate(45 354.9 77.0)"></rect><rect class="ev-invalid" x="371.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 375.1 77.0)"></rect><rect class="ev-invalid" x="371.9" y="73.8" width="6.4" height="6.4" transform="rotate(45 375.1 77.0)"></rect><rect class="ev-invalid" x="392.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 395.4 77.0)"></rect><rect class="ev-invalid" x="392.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 395.4 77.0)"></rect><rect class="ev-invalid" x="412.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 415.7 77.0)"></rect><rect class="ev-invalid" x="412.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 415.7 77.0)"></rect><rect class="ev-invalid" x="432.7" y="73.8" width="6.4" height="6.4" transform="rotate(45 435.9 77.0)"></rect><rect class="ev-invalid" x="432.7" y="73.8" width="6.4" height="6.4" transform="rotate(45 435.9 77.0)"></rect><rect class="ev-invalid" x="453.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 456.2 77.0)"></rect><rect class="ev-invalid" x="453.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 456.2 77.0)"></rect><rect class="ev-invalid" x="473.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 476.4 77.0)"></rect><rect class="ev-invalid" x="473.2" y="73.8" width="6.4" height="6.4" transform="rotate(45 476.4 77.0)"></rect><rect class="ev-invalid" x="493.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 496.7 77.0)"></rect><rect class="ev-invalid" x="493.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 496.7 77.0)"></rect><rect class="ev-invalid" x="513.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 517.0 77.0)"></rect><rect class="ev-invalid" x="513.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 517.0 77.0)"></rect><rect class="ev-invalid" x="534.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 537.2 77.0)"></rect><rect class="ev-invalid" x="534.0" y="73.8" width="6.4" height="6.4" transform="rotate(45 537.2 77.0)"></rect><rect class="ev-invalid" x="554.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 557.5 77.0)"></rect><rect class="ev-invalid" x="554.3" y="73.8" width="6.4" height="6.4" transform="rotate(45 557.5 77.0)"></rect><rect class="ev-invalid" x="574.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 577.7 77.0)"></rect><rect class="ev-invalid" x="574.5" y="73.8" width="6.4" height="6.4" transform="rotate(45 577.7 77.0)"></rect><rect class="ev-invalid" x="594.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 598.0 77.0)"></rect><rect class="ev-invalid" x="594.8" y="73.8" width="6.4" height="6.4" transform="rotate(45 598.0 77.0)"></rect><text class="row-label" x="122" y="81.0" text-anchor="end">198.51.100.77</text><text class="verdict" data-verdict="198.51.100.77" x="608.0" y="81.0">1 in 60s &lt; 5</text></g><g class="row flagged" data-row="203.0.113.7"><rect class="lane" x="132" y="98.0" width="466" height="22" rx="3"></rect><rect class="window-band" data-band="203.0.113.7" x="132.0" y="98.0" width="372.8" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="111.0" y2="111.0"></line><circle class="ev-failed" cx="132.0" cy="111.0" r="3"></circle><circle class="ev-failed" cx="150.6" cy="111.0" r="3"></circle><circle class="ev-failed" cx="169.3" cy="111.0" r="3"></circle><rect class="ev-invalid" x="184.7" y="107.8" width="6.4" height="6.4" transform="rotate(45 187.9 111.0)"></rect><rect class="ev-invalid" x="184.7" y="107.8" width="6.4" height="6.4" transform="rotate(45 187.9 111.0)"></rect><circle class="ev-failed" cx="206.6" cy="111.0" r="3"></circle><rect class="ev-invalid" x="222.0" y="107.8" width="6.4" height="6.4" transform="rotate(45 225.2 111.0)"></rect><rect class="ev-invalid" x="222.0" y="107.8" width="6.4" height="6.4" transform="rotate(45 225.2 111.0)"></rect><circle class="ev-failed" cx="243.8" cy="111.0" r="3"></circle><circle class="ev-failed" cx="262.5" cy="111.0" r="3"></circle><circle class="ev-failed" cx="281.1" cy="111.0" r="3"></circle><rect class="ev-invalid" x="296.6" y="107.8" width="6.4" height="6.4" transform="rotate(45 299.8 111.0)"></rect><rect class="ev-invalid" x="296.6" y="107.8" width="6.4" height="6.4" transform="rotate(45 299.8 111.0)"></rect><circle class="ev-failed" cx="318.4" cy="111.0" r="3"></circle><rect class="ev-invalid" x="333.8" y="107.8" width="6.4" height="6.4" transform="rotate(45 337.0 111.0)"></rect><rect class="ev-invalid" x="333.8" y="107.8" width="6.4" height="6.4" transform="rotate(45 337.0 111.0)"></rect><circle class="ev-failed" cx="355.7" cy="111.0" r="3"></circle><circle class="ev-failed" cx="374.3" cy="111.0" r="3"></circle><circle class="ev-failed" cx="393.0" cy="111.0" r="3"></circle><rect class="ev-invalid" x="408.4" y="107.8" width="6.4" height="6.4" transform="rotate(45 411.6 111.0)"></rect><rect class="ev-invalid" x="408.4" y="107.8" width="6.4" height="6.4" transform="rotate(45 411.6 111.0)"></rect><circle class="ev-failed" cx="430.2" cy="111.0" r="3"></circle><rect class="ev-invalid" x="445.7" y="107.8" width="6.4" height="6.4" transform="rotate(45 448.9 111.0)"></rect><rect class="ev-invalid" x="445.7" y="107.8" width="6.4" height="6.4" transform="rotate(45 448.9 111.0)"></rect><circle class="ev-failed" cx="467.5" cy="111.0" r="3"></circle><circle class="ev-failed" cx="486.2" cy="111.0" r="3"></circle><circle class="ev-failed" cx="504.8" cy="111.0" r="3"></circle><rect class="ev-invalid" x="520.2" y="107.8" width="6.4" height="6.4" transform="rotate(45 523.4 111.0)"></rect><rect class="ev-invalid" x="520.2" y="107.8" width="6.4" height="6.4" transform="rotate(45 523.4 111.0)"></rect><circle class="ev-failed" cx="542.1" cy="111.0" r="3"></circle><rect class="ev-invalid" x="557.5" y="107.8" width="6.4" height="6.4" transform="rotate(45 560.7 111.0)"></rect><rect class="ev-invalid" x="557.5" y="107.8" width="6.4" height="6.4" transform="rotate(45 560.7 111.0)"></rect><circle class="ev-accepted breach" cx="598.0" cy="111.0" r="4.5"></circle><text class="row-label" x="122" y="115.0" text-anchor="end">203.0.113.7</text><text class="verdict" data-verdict="203.0.113.7" x="608.0" y="115.0">21 in 60s ≥ 5</text></g><g class="row flagged" data-row="198.51.100.23"><rect class="lane" x="132" y="132.0" width="466" height="22" rx="3"></rect><rect class="window-band" data-band="198.51.100.23" x="132.0" y="132.0" width="231.1" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="145.0" y2="145.0"></line><circle class="ev-failed" cx="132.0" cy="145.0" r="3"></circle><circle class="ev-failed" cx="174.4" cy="145.0" r="3"></circle><circle class="ev-failed" cx="216.7" cy="145.0" r="3"></circle><circle class="ev-failed" cx="259.1" cy="145.0" r="3"></circle><circle class="ev-failed" cx="301.5" cy="145.0" r="3"></circle><circle class="ev-failed" cx="343.8" cy="145.0" r="3"></circle><circle class="ev-failed" cx="386.2" cy="145.0" r="3"></circle><circle class="ev-failed" cx="428.5" cy="145.0" r="3"></circle><circle class="ev-failed" cx="470.9" cy="145.0" r="3"></circle><circle class="ev-failed" cx="513.3" cy="145.0" r="3"></circle><circle class="ev-failed" cx="555.6" cy="145.0" r="3"></circle><circle class="ev-failed" cx="598.0" cy="145.0" r="3"></circle><text class="row-label" x="122" y="149.0" text-anchor="end">198.51.100.23</text><text class="verdict" data-verdict="198.51.100.23" x="608.0" y="149.0">6 in 60s ≥ 5</text></g><g class="row flagged" data-row="2001:db8:2::19"><rect class="lane" x="132" y="166.0" width="466" height="22" rx="3"></rect><rect class="window-band" data-band="2001:db8:2::19" x="150.6" y="166.0" width="447.4" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="179.0" y2="179.0"></line><rect class="ev-invalid" x="128.8" y="175.8" width="6.4" height="6.4" transform="rotate(45 132.0 179.0)"></rect><rect class="ev-invalid" x="147.4" y="175.8" width="6.4" height="6.4" transform="rotate(45 150.6 179.0)"></rect><rect class="ev-invalid" x="222.0" y="175.8" width="6.4" height="6.4" transform="rotate(45 225.2 179.0)"></rect><rect class="ev-invalid" x="296.6" y="175.8" width="6.4" height="6.4" transform="rotate(45 299.8 179.0)"></rect><rect class="ev-invalid" x="371.1" y="175.8" width="6.4" height="6.4" transform="rotate(45 374.3 179.0)"></rect><rect class="ev-invalid" x="445.7" y="175.8" width="6.4" height="6.4" transform="rotate(45 448.9 179.0)"></rect><rect class="ev-invalid" x="520.2" y="175.8" width="6.4" height="6.4" transform="rotate(45 523.4 179.0)"></rect><rect class="ev-invalid" x="594.8" y="175.8" width="6.4" height="6.4" transform="rotate(45 598.0 179.0)"></rect><text class="row-label" x="122" y="183.0" text-anchor="end">2001:db8:2::19</text><text class="verdict" data-verdict="2001:db8:2::19" x="608.0" y="183.0">7 in 60s ≥ 5</text></g><g class="row" data-row="192.0.2.11"><rect class="lane" x="132" y="200.0" width="466" height="22" rx="3"></rect><rect class="window-band" data-band="192.0.2.11" x="132.0" y="200.0" width="466.0" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="213.0" y2="213.0"></line><circle class="ev-failed" cx="132.0" cy="213.0" r="3"></circle><circle class="ev-accepted" cx="598.0" cy="213.0" r="4.5"></circle><text class="row-label" x="122" y="217.0" text-anchor="end">192.0.2.11</text><text class="verdict" data-verdict="192.0.2.11" x="608.0" y="217.0">1 in 60s &lt; 5</text></g><g class="row" data-row="192.0.2.10"><rect class="lane" x="132" y="234.0" width="466" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="247.0" y2="247.0"></line><circle class="ev-accepted" cx="132.0" cy="247.0" r="4.5"></circle><circle class="ev-accepted" cx="598.0" cy="247.0" r="4.5"></circle><text class="row-label" x="122" y="251.0" text-anchor="end">192.0.2.10</text><text class="verdict" data-verdict="192.0.2.10" x="608.0" y="251.0">0 in 60s &lt; 5</text></g><g class="row" data-row="192.0.2.31"><rect class="lane" x="132" y="268.0" width="466" height="22" rx="3"></rect><line class="lane-line" x1="132" x2="598" y1="281.0" y2="281.0"></line><circle class="ev-accepted" cx="132.0" cy="281.0" r="4.5"></circle><text class="row-label" x="122" y="285.0" text-anchor="end">192.0.2.31</text><text class="verdict" data-verdict="192.0.2.31" x="608.0" y="285.0">0 in 60s &lt; 5</text></g></svg></div>
+  <figcaption>
+    One lane per source, each on its own time axis — the lanes are not comparable to each
+    other in width, only in what happens inside them. The verdict beside each lane is the
+    comparison the detector makes: peak against threshold.
+  </figcaption>
+</figure>
+
+<h3>Flagged sources</h3>
+<table>
+  <thead>
+    <tr>
+      <th>source address</th>
+      <th class="num">peak in window</th>
+      <th class="num">failures</th>
+      <th class="num">accounts</th>
+      <th>first</th>
+      <th>last</th>
+    </tr>
+  </thead>
+  <tbody id="flagged-body">
+<tr class="flagged"><td class="ip">203.0.113.42</td><td class="num">31</td><td class="num">40</td><td class="num">1</td><td>04:02:00</td><td>04:03:18</td></tr><tr class="flagged"><td class="ip">203.0.113.7</td><td class="num">21</td><td class="num">24</td><td class="num">5</td><td>05:31:00</td><td>05:32:09</td></tr><tr class="flagged"><td class="ip">2001:db8:2::19</td><td class="num">7</td><td class="num">7</td><td class="num">1</td><td>07:15:00</td><td>07:15:24</td></tr><tr class="flagged"><td class="ip">198.51.100.23</td><td class="num">6</td><td class="num">12</td><td class="num">1</td><td>06:40:00</td><td>06:42:01</td></tr>
+  </tbody>
+</table>
+<p class="note">
+  At the default settings — threshold 5, window 60 seconds —
+  4 sources are flagged. Widen the window to 15m and
+  <code>198.51.100.77</code> joins them: its attempts are spread far enough apart that a
+  60-second window never holds more than 1 of them, which is what
+  a slow scan is for. Raise the threshold above 6 and <code>198.51.100.23</code>
+  drops out — the same evidence, read more strictly.
+</p>
+
+<details>
+  <summary>The rule as code, from <code>analyze.py</code></summary>
+  <pre><code>def _max_in_window(sorted_times: List[datetime], window: timedelta) -&gt; Tuple[int, int]:
+    &quot;&quot;&quot;Largest count of timestamps within any window-length span, and where it starts.
+
+    Input is sorted ascending. Returns ``(count, index)`` — the index being the position of
+    the first timestamp of the densest span, so a caller can say *when* the peak happened
+    and not only how large it was. On ties the earliest span wins.
+    &quot;&quot;&quot;
+    left = 0
+    best = 0
+    best_left = 0
+    for right in range(len(sorted_times)):
+        while sorted_times[right] - sorted_times[left] &gt; window:
+            left += 1
+        if right - left + 1 &gt; best:
+            best = right - left + 1
+            best_left = left
+    return best, best_left</code></pre>
+</details>
+
+<h2>A login that succeeded from an address that had been failing</h2>
+<p>
+  Success is not by itself interesting; success from a source that has just failed
+  5 times or more is. Only failures recorded <em>before</em> the
+  accepted login count, so an ordinary login followed later by unrelated failures is not
+  flagged.
+</p>
+<table>
+  <thead>
+    <tr><th>source address</th><th>account</th><th>when</th><th class="num">failures before</th></tr>
+  </thead>
+  <tbody>
+<tr><td class="ip">203.0.113.7</td><td class="user">svc-backup</td><td>05:32:15</td><td class="num">24</td></tr>
+  </tbody>
+</table>
+<p class="note">
+  On a real host this is the row to read first: it is the difference between an attack that
+  was attempted and one that worked.
+</p>
+
+<h2>Which accounts were probed</h2>
+<p>
+  24 of the accounts tried do not exist on the host — the signature of
+  enumeration rather than of a user who forgot a password: admin, ansible, backup, docker, elastic, ftp, git, guest, jenkins, mysql, nagios, operator, oracle, pi, postgres, redis, support, teamcity, test, tomcat, ubuntu, vagrant, www-data, zabbix.
+</p>
+<figure>
+  <div class="chart-wrap"><svg class="chart" viewBox="0 0 720 284" width="720" height="284" role="img" aria-label="Accounts by failed attempts (attempts)" xmlns="http://www.w3.org/2000/svg"><title>Accounts by failed attempts (attempts)</title><text class="row-label" x="122" y="25" text-anchor="end">root</text><rect class="bar" x="130" y="15" width="528.0" height="17" rx="2"></rect><text class="bar-value" x="664.0" y="25">44</text><text class="row-label" x="122" y="51" text-anchor="end">deploy</text><rect class="bar" x="130" y="41" width="144.0" height="17" rx="2"></rect><text class="bar-value" x="280.0" y="51">12</text><text class="row-label" x="122" y="77" text-anchor="end">oracle</text><rect class="bar" x="130" y="67" width="96.0" height="17" rx="2"></rect><text class="bar-value" x="232.0" y="77">8</text><text class="row-label" x="122" y="103" text-anchor="end">svc-backup</text><rect class="bar" x="130" y="93" width="96.0" height="17" rx="2"></rect><text class="bar-value" x="232.0" y="103">8</text><text class="row-label" x="122" y="129" text-anchor="end">admin</text><rect class="bar" x="130" y="119" width="60.0" height="17" rx="2"></rect><text class="bar-value" x="196.0" y="129">5</text><text class="row-label" x="122" y="155" text-anchor="end">postgres</text><rect class="bar" x="130" y="145" width="60.0" height="17" rx="2"></rect><text class="bar-value" x="196.0" y="155">5</text><text class="row-label" x="122" y="181" text-anchor="end">jenkins</text><rect class="bar" x="130" y="171" width="60.0" height="17" rx="2"></rect><text class="bar-value" x="196.0" y="181">5</text><text class="row-label" x="122" y="207" text-anchor="end">bob</text><rect class="bar" x="130" y="197" width="12.0" height="17" rx="2"></rect><text class="bar-value" x="148.0" y="207">1</text><text class="row-label" x="122" y="233" text-anchor="end">test</text><rect class="bar" x="130" y="223" width="12.0" height="17" rx="2"></rect><text class="bar-value" x="148.0" y="233">1</text><text class="row-label" x="122" y="259" text-anchor="end">git</text><rect class="bar" x="130" y="249" width="12.0" height="17" rx="2"></rect><text class="bar-value" x="148.0" y="259">1</text></svg></div>
+  <figcaption>
+    Failed attempts per account name. A name nobody created cannot produce a typo, so every
+    attempt against one is deliberate.
+  </figcaption>
+</figure>
+
+<h2>Where the failures came from</h2>
+<figure>
+  <div class="chart-wrap"><svg class="chart" viewBox="0 0 720 180" width="720" height="180" role="img" aria-label="Source addresses by failed logins (failures)" xmlns="http://www.w3.org/2000/svg"><title>Source addresses by failed logins (failures)</title><text class="row-label" x="122" y="25" text-anchor="end">203.0.113.42</text><rect class="bar" x="130" y="15" width="528.0" height="17" rx="2"></rect><text class="bar-value" x="664.0" y="25">40</text><text class="row-label" x="122" y="51" text-anchor="end">198.51.100.77</text><rect class="bar" x="130" y="41" width="316.8" height="17" rx="2"></rect><text class="bar-value" x="452.8" y="51">24</text><text class="row-label" x="122" y="77" text-anchor="end">203.0.113.7</text><rect class="bar" x="130" y="67" width="316.8" height="17" rx="2"></rect><text class="bar-value" x="452.8" y="77">24</text><text class="row-label" x="122" y="103" text-anchor="end">198.51.100.23</text><rect class="bar" x="130" y="93" width="158.4" height="17" rx="2"></rect><text class="bar-value" x="294.4" y="103">12</text><text class="row-label" x="122" y="129" text-anchor="end">2001:db8:2::19</text><rect class="bar" x="130" y="119" width="92.4" height="17" rx="2"></rect><text class="bar-value" x="228.4" y="129">7</text><text class="row-label" x="122" y="155" text-anchor="end">192.0.2.11</text><rect class="bar" x="130" y="145" width="13.2" height="17" rx="2"></rect><text class="bar-value" x="149.2" y="155">1</text></svg></div>
+  <figcaption>
+    Failed logins per source address. Addresses are treated as opaque strings — IPv4 and
+    IPv6 alike — and never resolved or geolocated.
+  </figcaption>
+</figure>
+
+<h2>What the tool prints</h2>
+<p class="note">
+  The page and the terminal report come from the same call. This is the plain output, at
+  the default settings, of <code>auth-log-scan auth-demo.log</code>:
+</p>
+<pre><code>== auth-log-scan report ==
+events parsed : 146
+time range    : 2026-03-14 00:12:03 .. 2026-03-14 07:16:40
+failed / accepted / invalid-user : 108 / 5 / 33
+
+[!] brute-force sources (4)
+source_ip       max/win  win(s)  total  users  first                last
+--------------  -------  ------  -----  -----  -------------------  -------------------
+203.0.113.42         31      60     40      1  2026-03-14 04:02:00  2026-03-14 04:03:18
+203.0.113.7          21      60     24      5  2026-03-14 05:31:00  2026-03-14 05:32:09
+2001:db8:2::19        7      60      7      1  2026-03-14 07:15:00  2026-03-14 07:15:24
+198.51.100.23         6      60     12      1  2026-03-14 06:40:00  2026-03-14 06:42:01
+
+[!] suspicious successes (1)
+source_ip    user        when                 prior_fails
+-----------  ----------  -------------------  -----------
+203.0.113.7  svc-backup  2026-03-14 05:32:15           24
+
+top attacked usernames
+user        attempts
+----------  --------
+root              44
+deploy            12
+oracle             8
+svc-backup         8
+admin              5
+postgres           5
+jenkins            5
+bob                1
+test               1
+git                1
+
+top source IPs by failures
+source_ip       failures
+--------------  --------
+203.0.113.42          40
+198.51.100.77         24
+203.0.113.7           24
+198.51.100.23         12
+2001:db8:2::19         7
+192.0.2.11             1
+
+invalid usernames probed (24): admin, ansible, backup, docker, elastic, ftp, git, guest, jenkins, mysql, nagios, operator, oracle, pi, postgres, redis, support, teamcity, test, tomcat, ubuntu, vagrant, www-data, zabbix</code></pre>
+
+<h2>Method, and what it cannot tell you</h2>
+<div class="card">
+  <p>
+    <strong>The data.</strong> The log is synthetic — written for this demo, using the
+    RFC 5737 and RFC 3849 documentation address ranges and invented account names. No real
+    log, from any host, is published here.
+  </p>
+  <p>
+    <strong>The numbers.</strong> Every figure on this page is produced by the same
+    <code>parse</code> and <code>analyze</code> functions the CLI calls. The sliders move
+    between results computed at build time — one full scan per window length — and the
+    browser only repeats the detector's own comparison of peak against threshold. CI
+    rebuilds this page and fails if it differs from the committed copy, so a figure here
+    cannot drift away from the code.
+  </p>
+  <p>
+    <strong>The limits.</strong> OpenSSH in the traditional syslog format only
+    (<code>auth.log</code>, <code>secure</code>); journald and other daemons are out of
+    scope. The analysis is stateless and single-file: no persistence, no live tailing, no
+    reputation data. A flagged address is a source of many failures in a short time, which
+    is evidence of an attempt — not proof of a compromise, and not a firewall rule.
+  </p>
+</div>
+
+<footer>
+  <p>
+    Built from <code>auth-demo.log</code> by
+    <a href="https://github.com/P0w3r223/auth-log-scan">auth-log-scan</a> · Python, standard library only ·
+    <a href="https://github.com/P0w3r223/auth-log-scan/blob/main/src/auth_log_scan/analyze.py">the detectors</a> ·
+    <a href="https://github.com/P0w3r223/auth-log-scan/blob/main/src/auth_log_scan/site/build.py">how this page is made</a>
+  </p>
+  <p>
+    Portfolio proof: Linux and security fundamentals, log analysis, and a pure core that can
+    be tested without touching a real log.
+  </p>
+</footer>
+
+<script type="application/json" id="scan-data">{"defaults":{"threshold":5,"window":60},"geometry":{"spans":{"192.0.2.10":25477.0,"192.0.2.11":7.0,"192.0.2.31":1.0,"198.51.100.23":121.0,"198.51.100.77":2116.0,"2001:db8:2::19":25.0,"203.0.113.42":78.0,"203.0.113.7":75.0},"width":466.0,"x":132.0},"lanes":[{"failures":40,"first":"04:02:00","ip":"203.0.113.42","last":"04:03:18","users":1},{"failures":24,"first":"02:14:00","ip":"198.51.100.77","last":"02:49:16","users":24},{"failures":24,"first":"05:31:00","ip":"203.0.113.7","last":"05:32:09","users":5},{"failures":12,"first":"06:40:00","ip":"198.51.100.23","last":"06:42:01","users":1},{"failures":7,"first":"07:15:00","ip":"2001:db8:2::19","last":"07:15:24","users":1},{"failures":1,"first":"01:44:12","ip":"192.0.2.11","last":"01:44:12","users":1},{"failures":0,"first":"00:12:03","ip":"192.0.2.10","last":"07:16:40","users":0},{"failures":0,"first":"01:05:41","ip":"192.0.2.31","last":"01:05:41","users":0}],"peaks":{"120":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":11,"start":0.0},"198.51.100.77":{"peak":2,"start":0.0},"2001:db8:2::19":{"peak":7,"start":1.0},"203.0.113.42":{"peak":40,"start":0.0},"203.0.113.7":{"peak":24,"start":0.0}},"15":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":2,"start":0.0},"198.51.100.77":{"peak":1,"start":0.0},"2001:db8:2::19":{"peak":4,"start":1.0},"203.0.113.42":{"peak":8,"start":0.0},"203.0.113.7":{"peak":6,"start":0.0}},"30":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":3,"start":0.0},"198.51.100.77":{"peak":1,"start":0.0},"2001:db8:2::19":{"peak":7,"start":1.0},"203.0.113.42":{"peak":16,"start":0.0},"203.0.113.7":{"peak":11,"start":0.0}},"300":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":12,"start":0.0},"198.51.100.77":{"peak":4,"start":0.0},"2001:db8:2::19":{"peak":7,"start":1.0},"203.0.113.42":{"peak":40,"start":0.0},"203.0.113.7":{"peak":24,"start":0.0}},"3600":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":12,"start":0.0},"198.51.100.77":{"peak":24,"start":0.0},"2001:db8:2::19":{"peak":7,"start":1.0},"203.0.113.42":{"peak":40,"start":0.0},"203.0.113.7":{"peak":24,"start":0.0}},"60":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":6,"start":0.0},"198.51.100.77":{"peak":1,"start":0.0},"2001:db8:2::19":{"peak":7,"start":1.0},"203.0.113.42":{"peak":31,"start":0.0},"203.0.113.7":{"peak":21,"start":0.0}},"900":{"192.0.2.11":{"peak":1,"start":0.0},"198.51.100.23":{"peak":12,"start":0.0},"198.51.100.77":{"peak":10,"start":0.0},"2001:db8:2::19":{"peak":7,"start":1.0},"203.0.113.42":{"peak":40,"start":0.0},"203.0.113.7":{"peak":24,"start":0.0}}},"thresholds":[3,4,5,6,7,8,9,10,11,12,13,14,15],"windowLabels":{"120":"120s","15":"15s","30":"30s","300":"5m","3600":"1h","60":"60s","900":"15m"},"windows":[15,30,60,120,300,900,3600]}</script>
+<script>
+/* The sliders switch between results the scanner already produced at build time: the
+   embedded data holds, for every window length, the peak each source reached and where
+   that peak began. The only thing computed here is the comparison the detector itself
+   makes — peak >= threshold — so the page cannot show a detection Python would not. */
+(function () {
+  "use strict";
+
+  var data = JSON.parse(document.getElementById("scan-data").textContent);
+  var chart = document.getElementById("window-chart");
+  var thresholdInput = document.getElementById("threshold");
+  var windowInput = document.getElementById("window");
+  if (!data || !chart || !thresholdInput || !windowInput) return;
+
+  document.documentElement.classList.add("js");
+
+  var thresholdOut = document.getElementById("threshold-value");
+  var windowOut = document.getElementById("window-value");
+  var verdictLine = document.getElementById("verdict-line");
+  var tableBody = document.getElementById("flagged-body");
+
+  function peaksFor(windowSeconds) {
+    return data.peaks[String(windowSeconds)] || {};
+  }
+
+  function scaleFor(ip) {
+    var span = data.geometry.spans[ip] || 1;
+    return data.geometry.width / span;
+  }
+
+  // Looked up once by their data-row value rather than through an attribute selector per
+  // redraw: an IPv6 address is full of characters a selector would have to escape.
+  var lanesByIp = {};
+  Array.prototype.forEach.call(chart.querySelectorAll("[data-row]"), function (group) {
+    lanesByIp[group.getAttribute("data-row")] = {
+      row: group,
+      band: group.querySelector("[data-band]"),
+      verdict: group.querySelector("[data-verdict]"),
+    };
+  });
+
+  function updateLane(lane, peaks, threshold, windowSeconds) {
+    var nodes = lanesByIp[lane.ip];
+    if (!nodes) return false;
+    var entry = peaks[lane.ip];
+    var row = nodes.row;
+    var band = nodes.band;
+    var verdict = nodes.verdict;
+
+    var peak = entry ? entry.peak : 0;
+    var flagged = peak >= threshold;
+    row.setAttribute("class", flagged ? "row flagged" : "row");
+
+    if (band) {
+      if (entry) {
+        var scale = scaleFor(lane.ip);
+        var x = data.geometry.x + entry.start * scale;
+        var width = Math.min(windowSeconds * scale, data.geometry.x + data.geometry.width - x);
+        band.setAttribute("x", x.toFixed(1));
+        band.setAttribute("width", Math.max(width, 2).toFixed(1));
+        band.style.display = "";
+      } else {
+        band.style.display = "none";
+      }
+    }
+    if (verdict) {
+      var label = data.windowLabels[String(windowSeconds)];
+      verdict.textContent = entry
+        ? peak + " in " + label + (flagged ? " ≥ " : " < ") + threshold
+        : "no failures";
+    }
+    return flagged;
+  }
+
+  function cell(text, className) {
+    var td = document.createElement("td");
+    td.textContent = text;
+    if (className) td.className = className;
+    return td;
+  }
+
+  function updateTable(flagged, peaks) {
+    if (!tableBody) return;
+    tableBody.textContent = "";
+    if (!flagged.length) {
+      var empty = document.createElement("tr");
+      var td = cell("No source reaches the threshold at this setting.", "empty");
+      td.colSpan = 6;
+      empty.appendChild(td);
+      tableBody.appendChild(empty);
+      return;
+    }
+    flagged.forEach(function (lane) {
+      var tr = document.createElement("tr");
+      tr.className = "flagged";
+      tr.appendChild(cell(lane.ip, "ip"));
+      tr.appendChild(cell(String(peaks[lane.ip].peak), "num"));
+      tr.appendChild(cell(String(lane.failures), "num"));
+      tr.appendChild(cell(String(lane.users), "num"));
+      tr.appendChild(cell(lane.first));
+      tr.appendChild(cell(lane.last));
+      tableBody.appendChild(tr);
+    });
+  }
+
+  function apply() {
+    var threshold = data.thresholds[Number(thresholdInput.value)];
+    var windowSeconds = data.windows[Number(windowInput.value)];
+    var peaks = peaksFor(windowSeconds);
+
+    var flagged = data.lanes.filter(function (lane) {
+      return updateLane(lane, peaks, threshold, windowSeconds);
+    });
+    // Same order the CLI prints: densest window first, total failures breaking the tie.
+    flagged.sort(function (a, b) {
+      return peaks[b.ip].peak - peaks[a.ip].peak || b.failures - a.failures;
+    });
+
+    thresholdOut.textContent = String(threshold);
+    windowOut.textContent = data.windowLabels[String(windowSeconds)];
+    if (verdictLine) {
+      var strong = document.createElement("strong");
+      strong.textContent = flagged.length + (flagged.length === 1 ? " source" : " sources");
+      verdictLine.textContent = "";
+      verdictLine.appendChild(document.createTextNode("At these settings the scanner flags "));
+      verdictLine.appendChild(strong);
+      verdictLine.appendChild(
+        document.createTextNode(" of the " + data.lanes.length + " in this log.")
+      );
+    }
+    updateTable(flagged, peaks);
+  }
+
+  thresholdInput.addEventListener("input", apply);
+  windowInput.addEventListener("input", apply);
+  apply();
+})();
+</script>
+
+</body>
+</html>

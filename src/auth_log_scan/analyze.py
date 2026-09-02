@@ -26,6 +26,7 @@ class BruteForceHit:
     first_seen: datetime
     last_seen: datetime
     targeted_users: int
+    peak_start: datetime  # first failure of the densest window — where max_in_window begins
 
 
 @dataclass(frozen=True)
@@ -51,15 +52,23 @@ class ScanResult:
     suspicious_successes: List[SuspiciousSuccess] = field(default_factory=list)
 
 
-def _max_in_window(sorted_times: List[datetime], window: timedelta) -> int:
-    """Largest count of timestamps falling within any window-length span (input sorted asc)."""
+def _max_in_window(sorted_times: List[datetime], window: timedelta) -> Tuple[int, int]:
+    """Largest count of timestamps within any window-length span, and where it starts.
+
+    Input is sorted ascending. Returns ``(count, index)`` — the index being the position of
+    the first timestamp of the densest span, so a caller can say *when* the peak happened
+    and not only how large it was. On ties the earliest span wins.
+    """
     left = 0
     best = 0
+    best_left = 0
     for right in range(len(sorted_times)):
         while sorted_times[right] - sorted_times[left] > window:
             left += 1
-        best = max(best, right - left + 1)
-    return best
+        if right - left + 1 > best:
+            best = right - left + 1
+            best_left = left
+    return best, best_left
 
 
 def analyze(
@@ -112,7 +121,7 @@ def analyze(
 
     for ip, times in failed_times_by_ip.items():
         times.sort()
-        peak = _max_in_window(times, window)
+        peak, peak_index = _max_in_window(times, window)
         if peak >= threshold:
             result.brute_force.append(
                 BruteForceHit(
@@ -123,6 +132,7 @@ def analyze(
                     first_seen=times[0],
                     last_seen=times[-1],
                     targeted_users=len(users_by_ip[ip]),
+                    peak_start=times[peak_index],
                 )
             )
 

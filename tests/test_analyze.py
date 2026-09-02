@@ -32,6 +32,23 @@ def test_brute_force_flagged_at_threshold_within_window():
     assert hit.failures == 5
 
 
+def test_peak_start_points_at_the_densest_span_not_the_first_failure():
+    # One failure, a long gap, then a burst: the peak is the burst, not the whole run.
+    events = [failed("203.0.113.7", 0)] + [failed("203.0.113.7", off) for off in (300, 302, 304, 306, 308)]
+    hit = analyze(events, threshold=5, window=timedelta(seconds=60)).brute_force[0]
+    assert hit.max_in_window == 5
+    assert hit.first_seen == BASE
+    assert hit.peak_start == BASE + timedelta(seconds=300)
+
+
+def test_peak_start_breaks_ties_towards_the_earliest_span():
+    # Two equally dense windows; the earlier one is reported.
+    events = [failed("203.0.113.7", off) for off in (0, 2, 4, 200, 202, 204)]
+    hit = analyze(events, threshold=3, window=timedelta(seconds=60)).brute_force[0]
+    assert hit.max_in_window == 3
+    assert hit.peak_start == BASE
+
+
 def test_below_threshold_not_flagged():
     events = [failed("203.0.113.7", off) for off in (0, 2, 4, 6)]
     result = analyze(events, threshold=5, window=timedelta(seconds=60))
