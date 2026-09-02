@@ -95,21 +95,23 @@ $kpis
 </figure>
 
 <h3>Flagged sources</h3>
-<table>
-  <thead>
-    <tr>
-      <th>source address</th>
-      <th class="num">peak in window</th>
-      <th class="num">failures</th>
-      <th class="num">accounts</th>
-      <th>first</th>
-      <th>last</th>
-    </tr>
-  </thead>
-  <tbody id="flagged-body">
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>source address</th>
+        <th class="num">peak in window</th>
+        <th class="num">failures</th>
+        <th class="num">accounts</th>
+        <th>first</th>
+        <th>last</th>
+      </tr>
+    </thead>
+    <tbody id="flagged-body">
 $flagged_rows
-  </tbody>
-</table>
+    </tbody>
+  </table>
+</div>
 <p class="note">
   At the default settings — threshold $threshold_default, window $window_default seconds —
   $flagged_count sources are flagged. Widen the window to $widen_label and
@@ -131,14 +133,16 @@ $flagged_rows
   accepted login count, so an ordinary login followed later by unrelated failures is not
   flagged.
 </p>
-<table>
-  <thead>
-    <tr><th>source address</th><th>account</th><th>when</th><th class="num">failures before</th></tr>
-  </thead>
-  <tbody>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>source address</th><th>account</th><th>when</th><th class="num">failures before</th></tr>
+    </thead>
+    <tbody>
 $suspicious_rows
-  </tbody>
-</table>
+    </tbody>
+  </table>
+</div>
 <p class="note">
   On a real host this is the row to read first: it is the difference between an attack that
   was attempted and one that worked.
