@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>auth-log-scan — what a brute-force attack looks like in an SSH log</title>
+<meta name="description" content="A live demo of auth-log-scan: an OpenSSH auth log read by the real scanner, with the sliding-window rule that separates an attack from ordinary noise made visible.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="auth-log-scan — what a brute-force attack looks like in an SSH log">
+<meta property="og:description" content="The sliding-window rule behind SSH brute-force detection, shown on a synthetic auth log.">
+<meta property="og:url" content="https://p0w3r223.github.io/auth-log-scan/">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><text y=%2213%22 font-size=%2213%22>&#128737;</text></svg>">
+<style>
+$styles
+</style>
+</head>
+<body>
+
+<header>
+  <p class="eyebrow">auth-log-scan · synthetic OpenSSH log · $date_label</p>
+  <h1>$failed failed logins in $span_hours hours — and only some of them are an attack</h1>
+  <p class="lead">
+    This page is the output of the scanner itself. It reads
+    <code>$log_name</code>, flags brute-force sources, username enumeration and logins that
+    succeed from an address that had been failing, and everything below is what came back.
+  </p>
+</header>
+
+<ul class="kpis">
+$kpis
+</ul>
+
+<h2>What the log holds</h2>
+<p>
+  $lines_read lines, of which $events are sshd authentication events — the rest are CRON
+  jobs, sudo calls and disconnects that the parser skips rather than guesses at. Placed on
+  one clock, the day is mostly quiet, and the pressure arrives in bursts minutes long.
+</p>
+<figure>
+  <div class="chart-wrap">$timeline</div>
+  <ul class="legend">
+    <li><svg width="12" height="12" aria-hidden="true"><circle class="ev-failed" cx="6" cy="6" r="3"></circle></svg>failed password</li>
+    <li><svg width="12" height="12" aria-hidden="true"><rect class="ev-invalid" x="3" y="3" width="6" height="6" transform="rotate(45 6 6)"></rect></svg>account that does not exist</li>
+    <li><svg width="14" height="14" aria-hidden="true"><circle class="ev-accepted" cx="7" cy="7" r="4.5"></circle></svg>accepted login</li>
+    <li><svg width="14" height="14" aria-hidden="true"><circle class="ev-accepted breach" cx="7" cy="7" r="4.5"></circle></svg>accepted after repeated failures</li>
+  </ul>
+  <figcaption>
+    Every recognised event between $first_seen and $last_seen, one lane per source address.
+    $failed failed, $accepted accepted, $invalid_events explicit <code>Invalid user</code>
+    lines.
+  </figcaption>
+</figure>
+
+<h2>The rule: a sliding window, not a total</h2>
+<p>
+  Counting failures per address would flag the wrong things. A shared host collects a
+  handful of typos a day, while an attacker produces the same number in a second. The
+  detector therefore reports the <em>densest</em> stretch: the largest number of failures
+  from one address inside any window-length span, and flags it when that peak reaches the
+  threshold.
+</p>
+<p>
+  Each lane below is zoomed to its own source, so a window that is a third of a pixel wide
+  across the whole day becomes visible. The band <em>is</em> the window; the marks inside
+  it are the count being compared.
+</p>
+
+<div class="controls">
+  <div class="control">
+    <label for="threshold">Threshold — failures needed to flag: <output id="threshold-value">$threshold_default</output></label>
+    <input type="range" id="threshold" min="0" max="$threshold_steps" step="1" value="$threshold_index" aria-label="failures needed to flag a source">
+    <div class="scale"><span>$threshold_min</span><span>$threshold_max</span></div>
+  </div>
+  <div class="control">
+    <label for="window">Window — how long the failures may take: <output id="window-value">$window_default_label</output></label>
+    <input type="range" id="window" min="0" max="$window_steps" step="1" value="$window_index" aria-label="length of the sliding window">
+    <div class="scale"><span>$window_min_label</span><span>$window_max_label</span></div>
+  </div>
+</div>
+<p class="verdict-line js-only" id="verdict-line"></p>
+<p class="note no-js">
+  Shown at the defaults the CLI uses: threshold $threshold_default,
+  window $window_default seconds. With JavaScript on, the two settings become sliders over
+  results this build already computed.
+</p>
+
+<figure>
+  <div class="chart-wrap">$window_chart</div>
+  <figcaption>
+    One lane per source, each on its own time axis — the lanes are not comparable to each
+    other in width, only in what happens inside them. The verdict beside each lane is the
+    comparison the detector makes: peak against threshold.
+  </figcaption>
+</figure>
+
+<h3>Flagged sources</h3>
+<table>
+  <thead>
+    <tr>
+      <th>source address</th>
+      <th class="num">peak in window</th>
+      <th class="num">failures</th>
+      <th class="num">accounts</th>
+      <th>first</th>
+      <th>last</th>
+    </tr>
+  </thead>
+  <tbody id="flagged-body">
+$flagged_rows
+  </tbody>
+</table>
+<p class="note">
+  At the default settings — threshold $threshold_default, window $window_default seconds —
+  $flagged_count sources are flagged. Widen the window to $widen_label and
+  <code>$newcomer</code> joins them: its attempts are spread far enough apart that a
+  $window_default-second window never holds more than $newcomer_peak of them, which is what
+  a slow scan is for. Raise the threshold above $weakest_peak and <code>$weakest</code>
+  drops out — the same evidence, read more strictly.
+</p>
+
+<details>
+  <summary>The rule as code, from <code>analyze.py</code></summary>
+  <pre><code>$window_rule</code></pre>
+</details>
+
+<h2>A login that succeeded from an address that had been failing</h2>
+<p>
+  Success is not by itself interesting; success from a source that has just failed
+  $min_success_failures times or more is. Only failures recorded <em>before</em> the
+  accepted login count, so an ordinary login followed later by unrelated failures is not
+  flagged.
+</p>
+<table>
+  <thead>
+    <tr><th>source address</th><th>account</th><th>when</th><th class="num">failures before</th></tr>
+  </thead>
+  <tbody>
+$suspicious_rows
+  </tbody>
+</table>
+<p class="note">
+  On a real host this is the row to read first: it is the difference between an attack that
+  was attempted and one that worked.
+</p>
+
+<h2>Which accounts were probed</h2>
+<p>
+  $probed_count of the accounts tried do not exist on the host — the signature of
+  enumeration rather than of a user who forgot a password: $probed.
+</p>
+<figure>
+  <div class="chart-wrap">$user_bars</div>
+  <figcaption>
+    Failed attempts per account name. A name nobody created cannot produce a typo, so every
+    attempt against one is deliberate.
+  </figcaption>
+</figure>
+
+<h2>Where the failures came from</h2>
+<figure>
+  <div class="chart-wrap">$ip_bars</div>
+  <figcaption>
+    Failed logins per source address. Addresses are treated as opaque strings — IPv4 and
+    IPv6 alike — and never resolved or geolocated.
+  </figcaption>
+</figure>
+
+<h2>What the tool prints</h2>
+<p class="note">
+  The page and the terminal report come from the same call. This is the plain output, at
+  the default settings, of <code>auth-log-scan $log_name</code>:
+</p>
+<pre><code>$report</code></pre>
+
+<h2>Method, and what it cannot tell you</h2>
+<div class="card">
+  <p>
+    <strong>The data.</strong> The log is synthetic — written for this demo, using the
+    RFC 5737 and RFC 3849 documentation address ranges and invented account names. No real
+    log, from any host, is published here.
+  </p>
+  <p>
+    <strong>The numbers.</strong> Every figure on this page is produced by the same
+    <code>parse</code> and <code>analyze</code> functions the CLI calls. The sliders move
+    between results computed at build time — one full scan per window length — and the
+    browser only repeats the detector's own comparison of peak against threshold. CI
+    rebuilds this page and fails if it differs from the committed copy, so a figure here
+    cannot drift away from the code.
+  </p>
+  <p>
+    <strong>The limits.</strong> OpenSSH in the traditional syslog format only
+    (<code>auth.log</code>, <code>secure</code>); journald and other daemons are out of
+    scope. The analysis is stateless and single-file: no persistence, no live tailing, no
+    reputation data. A flagged address is a source of many failures in a short time, which
+    is evidence of an attempt — not proof of a compromise, and not a firewall rule.
+  </p>
+</div>
+
+<footer>
+  <p>
+    Built from <code>$log_name</code> by
+    <a href="$repo">auth-log-scan</a> · Python, standard library only ·
+    <a href="$repo/blob/main/src/auth_log_scan/analyze.py">the detectors</a> ·
+    <a href="$repo/blob/main/src/auth_log_scan/site/build.py">how this page is made</a>
+  </p>
+  <p>
+    Portfolio proof: Linux and security fundamentals, log analysis, and a pure core that can
+    be tested without touching a real log.
+  </p>
+</footer>
+
+<script type="application/json" id="scan-data">$data</script>
+<script>
+$script
+</script>
+
+</body>
+</html>

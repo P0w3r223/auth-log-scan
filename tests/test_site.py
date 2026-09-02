@@ -1,0 +1,96 @@
+import json
+import re
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+
+from auth_log_scan.analyze import analyze
+from auth_log_scan.parse import parse_lines
+from auth_log_scan.site import build as site
+
+DEMO_LOG = Path(__file__).resolve().parents[1] / "sample" / "auth-demo.log"
+
+
+def _payload(html: str) -> dict:
+    match = re.search(r'<script type="application/json" id="scan-data">(.*?)</script>', html, re.S)
+    assert match, "the page must carry the precomputed results it advertises"
+    return json.loads(match.group(1))
+
+
+@pytest.fixture(scope="module")
+def page() -> str:
+    return site.render(DEMO_LOG)
+
+
+def test_page_flags_exactly_what_the_scanner_flags(page):
+    events = list(parse_lines(DEMO_LOG.read_text(encoding="utf-8").splitlines(), site.DEMO_YEAR))
+    expected = analyze(
+        events,
+        threshold=site.DEFAULT_THRESHOLD,
+        window=timedelta(seconds=site.DEFAULT_WINDOW),
+    )
+
+    peaks = _payload(page)["peaks"][str(site.DEFAULT_WINDOW)]
+    flagged = {ip for ip, entry in peaks.items() if entry["peak"] >= site.DEFAULT_THRESHOLD}
+    assert flagged == {hit.source_ip for hit in expected.brute_force}
+    for hit in expected.brute_force:
+        assert peaks[hit.source_ip]["peak"] == hit.max_in_window
+
+
+def test_every_slider_position_has_a_precomputed_result(page):
+    payload = _payload(page)
+    assert set(payload["peaks"]) == {str(window) for window in site.WINDOWS}
+    assert payload["defaults"]["window"] in payload["windows"]
+    assert payload["defaults"]["threshold"] in payload["thresholds"]
+    # Each lane the browser may redraw needs its own scale and a group to redraw into.
+    for lane in payload["lanes"]:
+        assert lane["ip"] in payload["geometry"]["spans"]
+        assert f'data-row="{lane["ip"]}"' in page or lane["ip"] in page
+
+
+def test_page_is_deterministic():
+    assert site.render(DEMO_LOG) == site.render(DEMO_LOG)
+
+
+def test_untrusted_log_fields_are_escaped(tmp_path):
+    # Usernames and addresses are attacker-chosen; a log must not be able to inject markup.
+    payload = "<script>alert(1)</script>"
+    log = tmp_path / "hostile.log"
+    log.write_text(
+        "\n".join(
+            f"Mar 14 04:02:{second:02d} web01 sshd[{2000 + second}]: Failed password for "
+            f"invalid user {payload} from 203.0.113.9 port {40000 + second} ssh2"
+            for second in range(6)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = site.render(log)
+    assert payload not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_build_writes_a_pages_ready_directory(tmp_path):
+    written = site.build(DEMO_LOG, tmp_path)
+    assert written == tmp_path / "index.html"
+    assert (tmp_path / ".nojekyll").exists()
+    # The published page is diffed byte for byte by CI, so line endings are not the OS's
+    # to choose.
+    assert b"\r\n" not in written.read_bytes()
+
+
+def test_crlf_input_does_not_change_the_page(tmp_path):
+    # A Windows checkout hands the build CRLF files. The page is diffed byte for byte, so
+    # the line endings of the inputs must not reach the output.
+    crlf = tmp_path / "crlf.log"
+    crlf.write_bytes(DEMO_LOG.read_bytes().replace(b"\n", b"\r\n"))
+    assert site.render(crlf) == site.render(DEMO_LOG).replace(DEMO_LOG.name, crlf.name)
+
+
+def test_render_refuses_a_log_it_recognises_nothing_in(tmp_path):
+    log = tmp_path / "empty.log"
+    log.write_text("Mar 14 04:02:00 web01 CRON[1]: session opened for user root\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        site.render(log)

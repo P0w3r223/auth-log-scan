@@ -16,7 +16,13 @@ src/auth_log_scan/
   analyze.py   # AuthEvent list -> ScanResult (brute-force / enumeration / suspicious success)
   report.py    # ScanResult -> terminal tables and JSON dict (rendering only)
   cli.py       # the only I/O: read file/stdin, run the scan, print/export
-sample/auth.log  # synthetic log (RFC 5737 documentation IPs) for the demo + docs
+  site/        # static page generator for GitHub Pages (not imported by the scanner)
+    charts.py    # rows -> inline SVG (pure)
+    build.py     # runs the real scanner over the demo log, renders docs/index.html
+    templates/, assets/   # string.Template page, CSS, and the slider script
+sample/auth.log       # synthetic log (RFC 5737 documentation IPs) for the demo + docs
+sample/auth-demo.log  # larger synthetic log, scanned to build the published page
+docs/            # the published page (generated; CI fails if it is stale or hand-edited)
 tests/           # pytest
 ```
 
@@ -30,6 +36,12 @@ tests/           # pytest
   never crash the scan.
 - **Traditional syslog timestamps omit the year** — the year is supplied by the caller
   (`--year`, default: current year); keep parsing deterministic given its inputs.
+- **The page never restates a finding.** Everything on `docs/index.html` is produced by
+  `parse`/`analyze`; the browser only repeats the detector's own `peak >= threshold`
+  comparison over results the build precomputed. No detection logic in JavaScript.
+- **The page build is deterministic** — the demo log's year is pinned and no build
+  timestamp is embedded, because CI diffs the rebuilt page against the committed one.
+  Rebuild with `python -m auth_log_scan.site` and commit the result.
 
 ## Conventions
 - English for code, comments, README, commit messages. Conventional Commits.
@@ -43,6 +55,7 @@ tests/           # pytest
 pytest
 auth-log-scan sample/auth.log            # or: python -m auth_log_scan sample/auth.log
 cat /var/log/auth.log | auth-log-scan -   # read from stdin
+python -m auth_log_scan.site              # rebuild docs/index.html from sample/auth-demo.log
 ```
 
 <!-- code-review-graph MCP tools -->
