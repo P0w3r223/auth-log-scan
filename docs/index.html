@@ -209,6 +209,11 @@ figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 0.35rem; }
 .js .js-only { display: revert; }
 .js .no-js { display: none; }
 
+/* Tables scroll inside their own box, like the charts and the code blocks above.
+   `width: 100%` cannot save them: the flagged table's six columns hold monospace
+   addresses and timestamps that will not wrap, so its min-content width is ~474px —
+   wider than a phone — and without a container it drags the whole page sideways. */
+.table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
 th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); }
 th { font-weight: 600; color: var(--muted); font-size: 0.82rem; }
@@ -324,21 +329,23 @@ footer {
 </figure>
 
 <h3>Flagged sources</h3>
-<table>
-  <thead>
-    <tr>
-      <th>source address</th>
-      <th class="num">peak in window</th>
-      <th class="num">failures</th>
-      <th class="num">accounts</th>
-      <th>first</th>
-      <th>last</th>
-    </tr>
-  </thead>
-  <tbody id="flagged-body">
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>source address</th>
+        <th class="num">peak in window</th>
+        <th class="num">failures</th>
+        <th class="num">accounts</th>
+        <th>first</th>
+        <th>last</th>
+      </tr>
+    </thead>
+    <tbody id="flagged-body">
 <tr class="flagged"><td class="ip">203.0.113.42</td><td class="num">31</td><td class="num">40</td><td class="num">1</td><td>04:02:00</td><td>04:03:18</td></tr><tr class="flagged"><td class="ip">203.0.113.7</td><td class="num">21</td><td class="num">24</td><td class="num">5</td><td>05:31:00</td><td>05:32:09</td></tr><tr class="flagged"><td class="ip">2001:db8:2::19</td><td class="num">7</td><td class="num">7</td><td class="num">1</td><td>07:15:00</td><td>07:15:24</td></tr><tr class="flagged"><td class="ip">198.51.100.23</td><td class="num">6</td><td class="num">12</td><td class="num">1</td><td>06:40:00</td><td>06:42:01</td></tr>
-  </tbody>
-</table>
+    </tbody>
+  </table>
+</div>
 <p class="note">
   At the default settings — threshold 5, window 60 seconds —
   4 sources are flagged. Widen the window to 15m and
@@ -376,14 +383,16 @@ footer {
   accepted login count, so an ordinary login followed later by unrelated failures is not
   flagged.
 </p>
-<table>
-  <thead>
-    <tr><th>source address</th><th>account</th><th>when</th><th class="num">failures before</th></tr>
-  </thead>
-  <tbody>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>source address</th><th>account</th><th>when</th><th class="num">failures before</th></tr>
+    </thead>
+    <tbody>
 <tr><td class="ip">203.0.113.7</td><td class="user">svc-backup</td><td>05:32:15</td><td class="num">24</td></tr>
-  </tbody>
-</table>
+    </tbody>
+  </table>
+</div>
 <p class="note">
   On a real host this is the row to read first: it is the difference between an attack that
   was attempted and one that worked.

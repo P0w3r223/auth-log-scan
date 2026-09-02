@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,41 @@ def test_crlf_input_does_not_change_the_page(tmp_path):
     crlf = tmp_path / "crlf.log"
     crlf.write_bytes(DEMO_LOG.read_bytes().replace(b"\n", b"\r\n"))
     assert site.render(crlf) == site.render(DEMO_LOG).replace(DEMO_LOG.name, crlf.name)
+
+
+def test_every_table_scrolls_inside_its_own_box(page):
+    # The flagged table's six columns hold monospace addresses and timestamps that will not
+    # wrap, so it is ~474px wide however narrow the screen is. Unwrapped it took the page
+    # with it: 494px of content in a 375px viewport, i.e. 119px of horizontal scroll on a
+    # phone. The container has to be there for every table, not only the one that was
+    # measured overflowing — the other fits today at 335px only because of what this log
+    # happens to contain.
+    class _Tables(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[str] = []
+            self.unwrapped = 0
+            self.tables = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "table":
+                self.tables += 1
+                if "table-wrap" not in self.stack:
+                    self.unwrapped += 1
+            if tag == "div":
+                self.stack.append(dict(attrs).get("class", ""))
+
+        def handle_endtag(self, tag):
+            if tag == "div" and self.stack:
+                self.stack.pop()
+
+    parser = _Tables()
+    parser.feed(page)
+    assert parser.tables > 0, "the page is supposed to publish tables"
+    assert parser.unwrapped == 0, f"{parser.unwrapped} table(s) can drag the page sideways"
+    # The wrapper is inert without the rule that makes it scroll.
+    styles = (Path(site.ASSET_DIR) / "styles.css").read_text(encoding="utf-8")
+    assert re.search(r"\.table-wrap\s*\{[^}]*overflow-x:\s*auto", styles)
 
 
 def test_render_refuses_a_log_it_recognises_nothing_in(tmp_path):
