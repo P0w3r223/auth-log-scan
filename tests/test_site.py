@@ -180,27 +180,40 @@ def _palettes(css: str) -> dict[str, dict[str, str]]:
     return {"light": light, "dark": dark}
 
 
+#: Any selector ending at the band, however many classes qualify it — not the two written
+#: today. A literal alternation of those two would let a third band join the stylesheet
+#: without joining the sweep, which is the defect this helper exists to close.
+_BAND_SELECTOR = r"((?:[.\w-]+ )*\.window-band)"
+
+
 def _painted(css: str, selector_pattern: str) -> list[tuple[str, str, float | None]]:
     """`(selector, token, opacity)` for every rule matching, read out of the stylesheet.
 
     **Derived rather than typed, and that is the whole point of it.** A first version listed
     the three marks its author had in mind; the stylesheet declares four — `.ev-accepted` is
     overridden by `.ev-accepted.breach`, which strokes `--danger` and is the mark this page's
-    whole subject produces. The published page carries three of them. Listing the members of
-    a set that lives in another file is the failure this repository's own record has now made
-    seven times; a rule that joins the stylesheet joins this sweep with it.
+    whole subject produces; the page emits all four states, three of them breaches. Listing
+    the members of
+    the members of a set that lives in another file is the failure `0008` §3.9 and §3.10
+    name; a rule that joins the stylesheet joins this sweep with it.
     """
-    found = []
+    tokens: dict[str, str] = {}
+    alphas: dict[str, float] = {}
     # The caller's pattern must carry exactly one group, naming the selector; the body is
     # this function's own. Without that the two call sites returned different shapes.
     for selector, body in re.findall(selector_pattern + r"\s*\{([^}]*)\}", css):
         token = re.search(r"(?:fill|stroke|background):\s*var\(--([\w-]+)\)", body)
-        if not token:
-            continue
+        if token:
+            tokens[selector] = token.group(1)
         alpha = re.search(r"opacity:\s*([\d.]+)", body)
-        found.append((selector, token.group(1), float(alpha.group(1)) if alpha else None))
-    assert found, f"no painted rule matched {selector_pattern!r}"
-    return found
+        if alpha:
+            # Collected across rules, last one winning, because CSS does not require the
+            # opacity beside the paint. A version that read only the painting rule kept
+            # using its opacity while a later rule overrode it — the defect this helper
+            # exists to end, reproduced inside it.
+            alphas[selector] = float(alpha.group(1))
+    assert tokens, f"no painted rule matched {selector_pattern!r}"
+    return [(selector, token, alphas.get(selector)) for selector, token in tokens.items()]
 
 
 def test_every_timeline_mark_clears_three_to_one_on_the_band_it_is_drawn_on(page):
@@ -215,14 +228,14 @@ def test_every_timeline_mark_clears_three_to_one_on_the_band_it_is_drawn_on(page
     which token each paints, and every opacity. A first version listed three marks and two
     literal opacities; the stylesheet declares four marks, and `.ev-failed { opacity: 0.7 }`
     put a mark at 2.51:1 while this computed 3.09:1 and passed. Both were the same defect:
-    a set enumerated in one file that lives in another.
+    a set enumerated in one file that lives in another, which `0008` §3.9 and §3.10 name.
 
     Lowering a band's opacity to satisfy this is a legitimate answer; raising one past what
     the marks can carry is not, and that is the direction this fails in.
     """
     css = re.search(r"<style>(.*?)</style>", page, re.DOTALL).group(1)
     palettes = _palettes(css)
-    bands = _painted(css, r"(\.chart (?:\.row\.flagged )?\.window-band)")
+    bands = _painted(css, _BAND_SELECTOR)
     marks = _painted(css, r"\.(ev-[\w.-]+)")
     assert len(bands) == 2, [b[0] for b in bands]
     assert len(marks) == 4, [m[0] for m in marks]
@@ -230,10 +243,14 @@ def test_every_timeline_mark_clears_three_to_one_on_the_band_it_is_drawn_on(page
     failures = []
     for scheme, palette in palettes.items():
         for band_name, band_token, band_alpha in bands:
-            band = _over(palette[band_token], palette["surface"], band_alpha or 1.0)
+            band = _over(palette[band_token], palette["surface"],
+                         1.0 if band_alpha is None else band_alpha)
             for mark_name, mark_token, mark_alpha in marks:
-                mark = (_over(palette[mark_token], band, mark_alpha) if mark_alpha
-                        else palette[mark_token])
+                # `is None`, not truthiness: an explicit `opacity: 0` is a real value
+                # and turning it into "no opacity" is how the sibling guard below was
+                # defeated by the very mutation it exists to catch.
+                mark = (palette[mark_token] if mark_alpha is None
+                        else _over(palette[mark_token], band, mark_alpha))
                 ratio = _contrast(mark, band)
                 if ratio < 3.0:
                     failures.append(f"{scheme} .{mark_name} on {band_name}: {ratio:.2f}:1")
@@ -253,8 +270,9 @@ def test_the_bands_are_still_visible_against_the_lane_they_sit_on(page):
     css = re.search(r"<style>(.*?)</style>", page, re.DOTALL).group(1)
     palettes = _palettes(css)
     for scheme, palette in palettes.items():
-        for name, token, alpha in _painted(css, r"(\.chart (?:\.row\.flagged )?\.window-band)"):
-            band = _over(palette[token], palette["surface"], alpha or 1.0)
+        for name, token, alpha in _painted(css, _BAND_SELECTOR):
+            band = _over(palette[token], palette["surface"],
+                         1.0 if alpha is None else alpha)
             assert band.lower() != palette["surface"].lower(), (
                 f"the {scheme} {name} composites to the lane's own colour, so it marks nothing"
             )
