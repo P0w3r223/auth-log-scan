@@ -44,6 +44,10 @@ THRESHOLDS: Tuple[int, ...] = tuple(range(3, 16))
 # the sources below the cut have single-digit failure counts.
 MAX_LANES = 8
 REPO_URL = "https://github.com/P0w3r223/auth-log-scan"
+#: `0007` §5 clause 6 asks for *exactly one* link back to the profile. Named beside
+#: `REPO_URL` and substituted the same way, so the template holds no URL of its own —
+#: which is this file's established pattern and not a new one.
+PROFILE_URL = "https://github.com/P0w3r223"
 
 
 def _read(path: Path) -> str:
@@ -382,6 +386,7 @@ def render(log_path: Path) -> str:
         "data": json.dumps(payload, separators=(",", ":"), sort_keys=True).replace("</", "<\\/"),
         **_slider_story(peaks, DEFAULT_THRESHOLD, DEFAULT_WINDOW),
         "repo": REPO_URL,
+        "profile": PROFILE_URL,
         "log_name": escape(log_path.name),
     }
     template = Template(_read(TEMPLATE_DIR / "index.html"))
