@@ -143,17 +143,32 @@ figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 0.35rem; }
 /* 0.25, not 0.45, and 0.15 for the flagged variant. The event marks are emitted after the
    band at the same y and height, so the band is their ground — and at the old opacities the
    marks composite against it below SC 1.4.11's 3:1. Solved rather than guessed: these are the
-   highest opacities at which every mark clears, measured with the pinned token values.
+   highest 0.05 step at which every mark clears. Swept in 0.01 steps the bounds are 0.29 and
+   0.19, so each takes a margin rather than sitting on the edge.
 
-     window-band  @0.45  ev-failed 2.61  ev-invalid 2.75  ev-accepted 3.30   (would fail)
-     window-band  @0.25  ev-failed 3.09  ev-invalid 3.27  ev-accepted 4.05
-     flagged      @0.28  ev-failed 2.69  ev-invalid 2.70  ev-accepted 2.28   (fails today)
-     flagged      @0.15  ev-failed 3.15  ev-invalid 3.20  ev-accepted 3.99
+   Four marks, not three: `.ev-accepted.breach` overrides `.ev-accepted` with `--danger`, and
+   this page publishes three of them.
+
+   As published before S7, with the unpinned tokens — five pairs under 3:1:
+
+                     ev-failed  ev-invalid  ev-accepted  breach
+     window  @0.45       3.12       3.31        2.81      3.60
+     flagged @0.28       2.69       2.70        2.28      2.92
+
+   With the pinned `--accent-soft` and `--positive`, which is what ships:
+
+     window  @0.45       2.61       2.75        3.30      2.91   (would fail)
+     window  @0.25       3.09       3.27        4.05      3.57
+     flagged @0.28       2.69       2.70        3.32      2.92   (would fail)
+     flagged @0.15       3.15       3.27        4.08      3.59
+
+   The two tables have different token sets and are kept apart for that reason; a first
+   version mixed one row of the second into the first and misread two cells of the last.
 
    The window band keeps its visibility against --surface (1.27:1 against 1.26:1 before). The
    flagged band gives some up, 1.55:1 to 1.26:1, and can afford to: `.verdict`, `.row-label`
    and the table's `td.ip` all carry the same state, so the row is not flagged by colour
-   alone. Dark clears at either opacity and is unchanged by this reasoning. */
+   alone. Dark clears at every opacity in both tables and is unchanged by this reasoning. */
 .chart .window-band { fill: var(--accent-soft); opacity: 0.25; }
 .chart .row.flagged .window-band { fill: var(--danger); opacity: 0.15; }
 .chart .verdict { font-size: 10.5px; fill: var(--muted); }
