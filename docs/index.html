@@ -23,8 +23,8 @@
   --text: #1c2430;
   --muted: #5b6472;
   --accent: #2563eb;
-  --accent-soft: #93c5fd;
-  --positive: #059669;
+  --accent-soft: #5b93e4;
+  --positive: #047857;
   --warn: #b45309;
   --danger: #dc2626;
   --radius: 10px;
@@ -38,7 +38,7 @@
     --text: #e6eaf2;
     --muted: #98a3b6;
     --accent: #6ea8fe;
-    --accent-soft: #2c4a7c;
+    --accent-soft: #4167a6;
     --positive: #34d399;
     --warn: #fbbf24;
     --danger: #f87171;
@@ -154,8 +154,22 @@ figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 0.35rem; }
 .ev-accepted.breach { stroke: var(--danger); }
 
 /* The sliding window itself: a band over the densest span the detector found. */
-.chart .window-band { fill: var(--accent-soft); opacity: 0.45; }
-.chart .row.flagged .window-band { fill: var(--danger); opacity: 0.28; }
+/* 0.25, not 0.45, and 0.15 for the flagged variant. The event marks are emitted after the
+   band at the same y and height, so the band is their ground — and at the old opacities the
+   marks composite against it below SC 1.4.11's 3:1. Solved rather than guessed: these are the
+   highest opacities at which every mark clears, measured with the pinned token values.
+
+     window-band  @0.45  ev-failed 2.61  ev-invalid 2.75  ev-accepted 3.30   (would fail)
+     window-band  @0.25  ev-failed 3.09  ev-invalid 3.27  ev-accepted 4.05
+     flagged      @0.28  ev-failed 2.69  ev-invalid 2.70  ev-accepted 2.28   (fails today)
+     flagged      @0.15  ev-failed 3.15  ev-invalid 3.20  ev-accepted 3.99
+
+   The window band keeps its visibility against --surface (1.27:1 against 1.26:1 before). The
+   flagged band gives some up, 1.55:1 to 1.26:1, and can afford to: `.verdict`, `.row-label`
+   and the table's `td.ip` all carry the same state, so the row is not flagged by colour
+   alone. Dark clears at either opacity and is unchanged by this reasoning. */
+.chart .window-band { fill: var(--accent-soft); opacity: 0.25; }
+.chart .row.flagged .window-band { fill: var(--danger); opacity: 0.15; }
 .chart .verdict { font-size: 10.5px; fill: var(--muted); }
 .chart .row.flagged .verdict { fill: var(--danger); font-weight: 600; }
 .chart .row.flagged .row-label { font-weight: 700; }
