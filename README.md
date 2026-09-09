@@ -8,7 +8,7 @@ synthetic log, with the sliding-window rule made visible.
 **Scan OpenSSH authentication logs for brute-force, username enumeration, and suspicious
 logins** — a terminal report (and optional JSON) from `/var/log/auth.log`, no dependencies.
 
-> Portfolio proof B2. Demonstrates Linux / security fundamentals and log analysis in Python
+> Portfolio proof: Linux / security fundamentals and log analysis in Python
 > (standard library only, pure/testable core) — covers the CISCO Ethical Hacker certificate.
 
 ## What it does
