@@ -86,11 +86,16 @@ def _quoted_command(text: str) -> list[str]:
     string, so tagging the block ```` ```text ```` would leave that reader working while
     this one died on a missing substring — two readers of one block disagreeing about
     what the block looks like.
+
+    Exactly one, asserted rather than assumed. Taking the last of several would leave a
+    second named command held to nothing while this guard went on reporting green.
     """
     cut = text.index(BLOCK_MARKER)
     commands = re.findall(r"`(auth-log-scan [^`]+)`", text[:cut])
-    assert commands, "the README must name the command its sample block is the output of"
-    return shlex.split(commands[-1])[1:]
+    assert len(commands) == 1, (
+        f"the sample block must be the output of exactly one named command, found {commands}"
+    )
+    return shlex.split(commands[0])[1:]
 
 
 def _run(argv: list[str]) -> str:
@@ -136,28 +141,93 @@ def test_and_without_the_pin_that_same_command_would_have_moved(monkeypatch):
     over a refactor that resolves the default at import time, where the patch still binds a
     live name and still never runs. This asserts the clock is reachable at all.
     """
-    argv = _quoted_command(_readme())
+    text = _readme()
+    argv = _quoted_command(text)
     assert "--year" in argv, "the README's command must pin the year"
     cut = argv.index("--year")
     monkeypatch.setattr(cli, "datetime", _frozen_at(2031))
-    assert "2031-03-10" in _run(argv[:cut] + argv[cut + 2:])
+    # The block, not a date literal: `2031-03-10` would also encode the sample log's own
+    # calendar day, so moving a timestamp in `sample/auth.log` would redden this guard under
+    # a name that says nothing about the sample data.
+    assert _run(argv[:cut] + argv[cut + 2:]) != _sample_block(text)
 
 
-def test_every_flag_the_parser_accepts_is_named_in_the_readme():
+def _prose(text: str) -> str:
+    """The README with its fenced blocks removed.
+
+    An option is documented when the prose names it, not when an example happens to contain
+    the characters. Every `-m` in this README is inside a fence — `python -m venv`,
+    `python -m auth_log_scan` — so searching the whole file reports a short-only `-m` flag as
+    documented. A mutation adding exactly that passed the first edition of this guard.
+    """
+    kept, in_fence = [], False
+    for line in text.split("\n"):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _named(flag: str, text: str) -> bool:
+    """Not `flag in text`: this guard's whole value is the flag nobody has written yet, and
+    a new `--min-success` would read as documented because `--min-success-failures` is."""
+    return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", text) is not None
+
+
+def test_every_option_the_parser_accepts_is_named_in_the_readme():
     """`--min-success-failures` was accepted by the CLI and documented nowhere.
 
-    Read off the parser rather than listed here, so a flag added later arrives with this
-    guard already pointing at it.
+    Read off the parser rather than listed here, so an option added later arrives with this
+    guard already pointing at it — **short forms included**. The first edition of this test
+    filtered on `startswith("--")` while its name promised every flag, so a short-only
+    `-m` would have passed it silently: the same shape as the defect the commit that added
+    it was closing.
     """
-    text = _readme()
-    flags = {
-        option
+    text = _prose(_readme())
+    assert "Options:" in text, "the fence stripper removed the sentence that documents them"
+    options = [
+        action.option_strings
         for action in cli.build_parser()._actions
-        for option in action.option_strings
-        if option.startswith("--") and option != "--help"
-    }
-    assert flags, "the parser must expose long options for this guard to mean anything"
-    # Not `flag in text`: this guard's whole value is the flag nobody has written yet, and a
-    # new `--min-success` would read as documented because `--min-success-failures` is there.
-    missing = {flag for flag in flags if not re.search(rf"{re.escape(flag)}(?![\w-])", text)}
-    assert missing == set()
+        if action.option_strings and "--help" not in action.option_strings
+    ]
+    assert options, "the parser must expose options for this guard to mean anything"
+    assert any(len(one) > 1 for one in options), "the paired form below is never exercised"
+    missing = []
+    for strings in options:
+        short = [one for one in strings if not one.startswith("--")]
+        long = [one for one in strings if one.startswith("--")]
+        # The README writes the paired form `-t/--threshold`, so a flag with both is
+        # documented only when both halves are there — naming one leaves the other unfindable.
+        if not all(_named(one, text) for one in short + long):
+            missing.append("/".join(strings))
+    assert missing == []
+
+
+def test_the_two_figures_the_readme_states_about_this_repository_are_its_own():
+    """The commit that added this file deleted *"42 in the suite as a whole"* because a
+    hand-typed figure beside no instrument is the defect — and left two of the same class
+    standing, one of them in the sentence it was editing. Both are read out of the README
+    and re-derived here rather than repeated.
+    """
+    # `\s+` and not a literal space: the README is wrapped prose and either phrase can
+    # straddle a line break. The first edition used spaces and reddened on a re-wrap made in
+    # the same commit — reporting a missing sentence that was three inches away.
+    text = _readme()
+
+    log = re.search(r"(\d+)-line\s+synthetic\s+log", text)
+    assert log, "the README must say how long the demo log is, or this guard checks nothing"
+    demo = README.parent / "sample" / "auth-demo.log"
+    assert int(log.group(1)) == len(demo.read_bytes().decode("utf-8").splitlines())
+
+    pure = re.search(r"the\s+(\d+)\s+parser\s+and\s+detector\s+tests", text)
+    assert pure, "the README must say how many tests need no log"
+    modules = [README.parent / "tests" / name for name in ("test_parse.py", "test_analyze.py")]
+    sources = [one.read_bytes().decode("utf-8") for one in modules]
+    # Counting `def test_` equals what pytest collects only while neither module
+    # parametrises. Asserting that is what keeps the count a measurement rather than a guess.
+    assert not any("parametrize" in one for one in sources), (
+        "a parametrised case collects more than once; count collected items instead"
+    )
+    assert int(pure.group(1)) == sum(len(re.findall(r"^def test_", one, re.M)) for one in sources)
