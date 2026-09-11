@@ -152,6 +152,24 @@ def test_and_without_the_pin_that_same_command_would_have_moved(monkeypatch):
     assert _run(argv[:cut] + argv[cut + 2:]) != _sample_block(text)
 
 
+def _prose(text: str) -> str:
+    """The README with its fenced blocks removed.
+
+    An option is documented when the prose names it, not when an example happens to contain
+    the characters. Every `-m` in this README is inside a fence — `python -m venv`,
+    `python -m auth_log_scan` — so searching the whole file reports a short-only `-m` flag as
+    documented. A mutation adding exactly that passed the first edition of this guard.
+    """
+    kept, in_fence = [], False
+    for line in text.split("\n"):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def _named(flag: str, text: str) -> bool:
     """Not `flag in text`: this guard's whole value is the flag nobody has written yet, and
     a new `--min-success` would read as documented because `--min-success-failures` is."""
@@ -167,7 +185,8 @@ def test_every_option_the_parser_accepts_is_named_in_the_readme():
     `-m` would have passed it silently: the same shape as the defect the commit that added
     it was closing.
     """
-    text = _readme()
+    text = _prose(_readme())
+    assert "Options:" in text, "the fence stripper removed the sentence that documents them"
     options = [
         action.option_strings
         for action in cli.build_parser()._actions
