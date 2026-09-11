@@ -42,11 +42,15 @@ auth-log-scan /var/log/auth.log -t 8 -w 120 --json findings.json
 ```
 
 Options: `-t/--threshold` (default 5), `-w/--window` seconds (60), `--top` rows (10),
+`--min-success-failures` prior failures before an accepted login is flagged (5),
 `--year` for timestamps that omit it (default: current year), `--json PATH` (`-` for stdout).
 
 ## Sample output
 
-Running against the bundled synthetic log (`sample/auth.log`):
+Running `auth-log-scan sample/auth.log --year 2026` against the bundled synthetic log.
+**The year is pinned on purpose**: traditional syslog omits it, so without the flag this
+block reproduces only while the current year happens to be 2026 — the same reason
+`site/build.py` pins `DEMO_YEAR`.
 
 ```
 == auth-log-scan report ==
