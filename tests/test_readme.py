@@ -29,6 +29,18 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 BLOCK_MARKER = "== auth-log-scan report =="
 
 
+@pytest.fixture(autouse=True)
+def _at_the_repo_root(monkeypatch):
+    """The README writes its command for a reader standing in the repository root.
+
+    Its `sample/auth.log` is relative and `cli` opens it against the process working
+    directory, so run from anywhere else these guards fail with the log unreadable and
+    report it as the sample block being wrong. Making the directory the claim rather than
+    an assumption is what keeps a real finding legible.
+    """
+    monkeypatch.chdir(README.parent)
+
+
 def _readme() -> str:
     """The README with its line endings folded.
 
@@ -68,8 +80,14 @@ def _sample_block(text: str) -> str:
 
 
 def _quoted_command(text: str) -> list[str]:
-    """The `auth-log-scan …` the README names immediately before its sample block."""
-    cut = text.index("```\n" + BLOCK_MARKER)
+    """The `auth-log-scan …` the README names immediately before its sample block.
+
+    Cut on the marker and not on the fence that opens it: `_fenced` tolerates an info
+    string, so tagging the block ```` ```text ```` would leave that reader working while
+    this one died on a missing substring — two readers of one block disagreeing about
+    what the block looks like.
+    """
+    cut = text.index(BLOCK_MARKER)
     commands = re.findall(r"`(auth-log-scan [^`]+)`", text[:cut])
     assert commands, "the README must name the command its sample block is the output of"
     return shlex.split(commands[-1])[1:]
@@ -88,6 +106,15 @@ def test_the_sample_block_is_what_the_readmes_own_quoted_command_prints():
     assert _run(_quoted_command(text)) == _sample_block(text)
 
 
+def _frozen_at(year: int) -> type[datetime]:
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(year, 6, 1)
+
+    return _Frozen
+
+
 @pytest.mark.parametrize("year", [2026, 2027, 2031])
 def test_and_it_prints_the_same_block_whatever_year_the_reader_runs_it_in(monkeypatch, year):
     """The finding itself, stated as a property rather than as the shape of its fix.
@@ -95,15 +122,25 @@ def test_and_it_prints_the_same_block_whatever_year_the_reader_runs_it_in(monkey
     Without `--year` the block is a function of the clock. Asserting that the README names
     the flag would pass over any value; asserting the output does not move is the claim.
     """
-
-    class _Frozen(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return datetime(year, 6, 1)
-
-    monkeypatch.setattr(cli, "datetime", _Frozen)
+    monkeypatch.setattr(cli, "datetime", _frozen_at(year))
     text = _readme()
     assert _run(_quoted_command(text)) == _sample_block(text)
+
+
+def test_and_without_the_pin_that_same_command_would_have_moved(monkeypatch):
+    """The positive control, without which the guard above cannot detect its own inertness.
+
+    Because the README now pins the year, `cli` never reaches `datetime.now()` during that
+    test and the patch is inert by design — three parametrized cases that are three repeats
+    of the first guard. They stay red if the pin leaves the README, but they would go green
+    over a refactor that resolves the default at import time, where the patch still binds a
+    live name and still never runs. This asserts the clock is reachable at all.
+    """
+    argv = _quoted_command(_readme())
+    assert "--year" in argv, "the README's command must pin the year"
+    cut = argv.index("--year")
+    monkeypatch.setattr(cli, "datetime", _frozen_at(2031))
+    assert "2031-03-10" in _run(argv[:cut] + argv[cut + 2:])
 
 
 def test_every_flag_the_parser_accepts_is_named_in_the_readme():
@@ -120,4 +157,7 @@ def test_every_flag_the_parser_accepts_is_named_in_the_readme():
         if option.startswith("--") and option != "--help"
     }
     assert flags, "the parser must expose long options for this guard to mean anything"
-    assert {flag for flag in flags if flag not in text} == set()
+    # Not `flag in text`: this guard's whole value is the flag nobody has written yet, and a
+    # new `--min-success` would read as documented because `--min-success-failures` is there.
+    missing = {flag for flag in flags if not re.search(rf"{re.escape(flag)}(?![\w-])", text)}
+    assert missing == set()
