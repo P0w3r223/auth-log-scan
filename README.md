@@ -122,8 +122,8 @@ figure on the site cannot drift away from the code that produced it.
   is not flagged.
 
 The parser (`parse.py`) and detectors (`analyze.py`) are pure functions with no I/O; all
-file/stdin handling lives in `cli.py`. That split is what makes the 21 parser and detector tests possible
-without touching a real log.
+file/stdin handling lives in `cli.py`. That split is what makes the 21 parser and detector
+tests possible without touching a real log.
 
 ## Limitations
 
