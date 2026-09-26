@@ -20,6 +20,21 @@ Reads an sshd auth log (file or stdin) and flags three things:
 3. **Suspicious successes** — an `Accepted` login from an IP that had already failed many
    times earlier in the log (a possible breach after brute forcing).
 
+## Detections & methodology
+
+- **Brute-force** uses a *sliding window*, not a naïve total: it reports the peak number of
+  failures from an IP within any `window`-length span, so slow, spread-out noise is not
+  mistaken for an attack.
+- **Enumeration** counts attempts per username and collects every account probed via
+  `invalid user`, the classic reconnaissance signature.
+- **Suspicious success** only counts failures that occurred *before* the accepted login (the
+  log is processed in time order), so a normal login that happens to precede later failures
+  is not flagged.
+
+The parser (`parse.py`) and detectors (`analyze.py`) are pure functions with no I/O; all
+file/stdin handling lives in `cli.py`. That split is what makes the 21 parser and detector
+tests possible without touching a real log.
+
 ## Setup
 
 Python 3.11+; no runtime dependencies (standard library only).
@@ -109,21 +124,6 @@ python -m auth_log_scan.site --log my.log --out build/site
 
 CI rebuilds the page on every push and fails if it differs from the committed copy, so a
 figure on the site cannot drift away from the code that produced it.
-
-## Detections & methodology
-
-- **Brute-force** uses a *sliding window*, not a naïve total: it reports the peak number of
-  failures from an IP within any `window`-length span, so slow, spread-out noise is not
-  mistaken for an attack.
-- **Enumeration** counts attempts per username and collects every account probed via
-  `invalid user`, the classic reconnaissance signature.
-- **Suspicious success** only counts failures that occurred *before* the accepted login (the
-  log is processed in time order), so a normal login that happens to precede later failures
-  is not flagged.
-
-The parser (`parse.py`) and detectors (`analyze.py`) are pure functions with no I/O; all
-file/stdin handling lives in `cli.py`. That split is what makes the 21 parser and detector
-tests possible without touching a real log.
 
 ## Limitations
 
